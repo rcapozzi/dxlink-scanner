@@ -1,0 +1,69 @@
+# Production scanner configuration
+# Focuses on the most liquid large-cap options: SPY, SPX, ES
+
+tastytrade:
+  client_id: "${TASTY_CLIENT_ID}"
+  client_secret: "${TASTY_CLIENT_SECRET}"
+  refresh_token: "${TASTY_REFRESH_TOKEN}"
+  sandbox: false
+
+watchlist:
+  default_alert_rules:
+    - name: "absolute_size"
+      expression: "trade.size >= 1000"
+      severity: "critical"
+    # - name: "anomaly_detector"
+    #   expression: "trade.is_option && trade.size > 10 && trade.size > stats.median * 2.0"
+    #   severity: "high"
+  tickers:
+    # - symbol: "SPY"
+    #   option_type: "equity"
+    #   strikes_around_atm: 20
+    #   expiration_filter: "0DTE"
+    #   underlying_alert_rules:
+    #     - name: "huge_option_print"
+    #       expression: "trade.is_option && trade.size >= 90 && trade.price > .25"
+    #       severity: "high"
+    #     - name: "large_option_print"
+    #       expression: "trade.is_option && trade.size >= 50 && trade.price > .25"
+    #       severity: "medium"
+    # - symbol: "SPX"
+    #   option_type: "equity"
+    #   strikes_around_atm: 20
+    #   expiration_filter: "0DTE"
+    #   underlying_alert_rules:
+    #     - name: "spx_large_print"
+    #       expression: "trade.is_option && trade.size >= 50 && trade.price > 0.50"
+    #       severity: "high"
+    - symbol: "/ES"
+      option_type: "futures"
+      strikes_around_atm: 25
+      expiration_filter: "0DTE"
+      underlying_alert_rules:
+        - name: "large_option_print"
+          expression: "trade.is_option && trade.size >= 5 && trade.price > 2.0"
+          severity: "medium"
+
+detection:
+  size_mult: 2.0
+  abs_min_size: 5
+  stats_window: 50
+
+outputs:
+  stdout: true
+  webhook:
+    enabled: false
+    url: "${WEBHOOK_URL}"
+    timeout_seconds: 5
+    max_retries: 3
+  data_dir: "data/events"
+  persist_events: false
+
+stream:
+  backpressure_queue_size: 500
+  flush_interval_sec: 300.0
+  flush_batch_size: 1000
+
+logging:
+  level: "INFO"
+  json_format: true
