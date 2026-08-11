@@ -104,7 +104,7 @@ async def _produce_time_and_sales():
 | Event Type | Symbols | Notes |
 |------------|---------|-------|
 | Quote | All option symbols + underlying futures | Best bid/ask; mid_price = (bid+ask)/2 |
-| TimeAndSale | All option symbols | Trade prints |
+| TimeAndSale | All option symbols | Trade prints | last_trade_price, last_trade_size, trade_type |
 
 ### 4. Backpressure Queue (`asyncio.Queue`)
 
@@ -148,10 +148,10 @@ async def _consume_consolidated(queue, store, rules, sinks):
 ```
 
 **Normalization** (`src/dxlink_scanner/models.py`):
-| DXLink Type | Normalizer | Key Fields Extracted |
-|-------------|------------|---------------------|
-| Quote | `normalize_quote()` | bid/ask price |
-| TimeAndSale | `normalize_timeandsale()` | last_price, size, trade_type |
+|| DXLink Type | Normalizer | Key Fields Extracted |
+||-------------|------------|---------------------|
+|| Quote | `normalize_quote()` | bid/ask price |
+|| TimeAndSale | `normalize_timeandsale()` | last_trade_price, last_trade_size, last_trade_type |
 
 ### 6. Snapshot Store (`src/dxlink_scanner/snapshot_store.py`)
 
@@ -247,8 +247,6 @@ activation = {
   "price": "2.50",
   "size": 150,
   "timestamp_ms": 1722355200000,
-  "median_size": 25.0,
-  "ratio": 6.0,
   "rule": "size_mult",
   "severity": "high",
   "underlying_price": 450.00
@@ -348,13 +346,8 @@ class Alert:
     price: Decimal
     size: int
     timestamp_ms: int          # Epoch milliseconds
-    median_size: float
-    ratio: float
     rule_name: str
     severity: str = "high"     # info, low, medium, high, critical
-    bid_price: Decimal | None = None
-    ask_price: Decimal | None = None
-    trade_type: str | None = None
     underlying_price: float | None = None  # from Quote mid_price on underlying
 ```
 
@@ -367,9 +360,14 @@ class ConsolidatedSnapshot:
     updated_at: datetime
     bid_price: Decimal | None = None
     ask_price: Decimal | None = None
+    last_trade_price: Decimal | None = None
+    last_trade_size: int | None = None
+    last_trade_time: int | None = None      # epoch ms
+    last_trade_type: str | None = None
     mid_price: Decimal | None = None
     spread: Decimal | None = None
     spread_bps: float | None = None
+    trade_vs_mid: Decimal | None = None
     evict_at: int | None = None             # epoch ms for TTL
 ```
 

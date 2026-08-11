@@ -162,13 +162,8 @@ class Alert:
     price: Decimal
     size: int
     timestamp_ms: int              # Epoch milliseconds
-    median_size: float
-    ratio: float
     rule_name: str
     severity: str = "high"         # info|low|medium|high|critical
-    bid_price: Decimal | None = None
-    ask_price: Decimal | None = None
-    trade_type: str | None = None
     underlying_price: float | None = None  # Derived from Quote mid_price (bid+ask)/2
 ```
 
@@ -380,11 +375,9 @@ Convert Alert to JSON-serializable dict.
     "price": "2.50",
     "size": 150,
     "timestamp_ms": 1722355200000,
-    "median_size": 25.0,
-    "ratio": 6.0,
     "rule": "size_mult",
     "severity": "high",
-    "underlying_price": "450.00",
+    "underlying_price": 450.00,
 }
 ```
 

@@ -36,24 +36,17 @@ schema_v1 = pa.schema([
     # Quote fields — from Quote event
     ("bid_price", pa.string()),            # Decimal as string
     ("ask_price", pa.string()),
-    ("bid_size", pa.int64()),
-    ("ask_size", pa.int64()),
-    ("bid_time", pa.timestamp("ms", tz="UTC")),
-    ("ask_time", pa.timestamp("ms", tz="UTC")),
 
     # TimeAndSale fields — from TAS event
     ("last_trade_price", pa.string()),
     ("last_trade_size", pa.int64()),
     ("last_trade_time", pa.int64()),       # epoch ms
-    ("last_trade_exchange", pa.string()),
     ("last_trade_type", pa.string()),
 
     # Raw exchange timestamps (all epoch ms)
     ("event_time_ms", pa.int64()),
     ("time_ms", pa.int64()),
     ("time_nano_part_ms", pa.int64()),
-    ("bid_time_ms", pa.int64()),
-    ("ask_time_ms", pa.int64()),
 
     # Snapshot lifecycle
     ("evict_at", pa.int64()),              # epoch ms for TTL
@@ -154,7 +147,7 @@ Two representations:
 | Field | Type | Description |
 |-------|------|-------------|
 | `received_at` | `timestamp[ms, tz=UTC]` | When scanner received the event |
-| `event_time_ms`, `time_ms`, `time_nano_part_ms`, `bid_time_ms`, `ask_time_ms`, `last_trade_time` | `int64` | Raw exchange timestamps (epoch ms) |
+| `event_time_ms`, `time_ms`, `time_nano_part_ms`, `last_trade_time` | `int64` | Raw exchange timestamps (epoch ms) |
 
 **Reading with DuckDB**:
 ```sql
@@ -311,7 +304,7 @@ for symbol, evict_at in list(self._evict_map.items()):
 ```
 
 ### Daily Restart
-Scanner restarts 17:00–18:00 ET (market close):
+Scanner restarts daily at 17:00–18:00 ET (equity options only). For futures options, the scanner continues running overnight and only restarts on Friday evenings.
 1. SIGTERM received → `store.flush_remaining()`
 2. Process exits
 3. Scheduler restarts scanner

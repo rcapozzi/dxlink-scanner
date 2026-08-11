@@ -114,7 +114,7 @@ metadata:
  name: scanner
  namespace: trading
 spec:
- schedule: "0 21 * * 1-5" # 17:00 ET = 21:00 UTC, Mon-Fri
+ schedule: "0 21 * * 1-5" # 17:00 ET = 21:00 UTC, Mon-Fri (equity options only)
  timeZone: "America/New_York"
  concurrencyPolicy: Forbid
  jobTemplate:
@@ -212,8 +212,8 @@ sudo chmod 750 /opt/scanner/data
 | 09:30 | Market open: monitor alert rate, queue depth |
 | 16:00 | Market close (RTH): volume spike expected |
 | 16:15 | Post-market: verify Parquet flush |
-| 17:00 | **SIGTERM sent** — graceful shutdown |
-| 17:00-18:00 | Restart window — new session begins |
+| 17:00 | **SIGTERM sent** — graceful shutdown (equity-only) / **continue** (futures overnight) |
+| 17:00-18:00 | Futures overnight session (if futures in watchlist); equity scanner restart |
 | 02:00 | Compaction job runs (cron) |
 
 ### Graceful Shutdown Process
@@ -242,7 +242,7 @@ await asyncio.gather(*producer_tasks, return_exceptions=True)
 await consumer_task
 ```
 
-**Trigger**: External scheduler (systemd timer, cron, K8s CronJob) sends `SIGTERM` at 17:00 ET.
+**Trigger**: External scheduler (systemd timer, cron, K8s CronJob) sends `SIGTERM` at 17:00 ET (equity options only). For futures, the scanner continues running overnight — no auto-shutdown until Friday 17:00 ET (weekend).
 
 ### Health Checks
 
