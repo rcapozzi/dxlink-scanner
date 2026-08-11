@@ -27,8 +27,6 @@ def test_alert_to_dict():
         price=Decimal("1.23"),
         size=500,
         timestamp_ms=1722355200000,
-        median_size=50.0,
-        ratio=10.0,
         rule_name="size_mult",
     )
     d = _alert_to_dict(alert)
@@ -36,11 +34,10 @@ def test_alert_to_dict():
     assert d["price"] == "1.23"
     assert d["size"] == 500
     assert d["rule"] == "size_mult"
-    assert d["ratio"] == 10.0
-    assert d["median_size"] == 50.0
     assert d["timestamp_ms"] == 1722355200000  # 2024-07-30T16:00:00 UTC
 
     assert d["severity"] == "high"
+    assert d["underlying_price"] is None
 
 
 def test_stdout_sink_minimal_alert():
@@ -52,8 +49,6 @@ def test_stdout_sink_minimal_alert():
         price=Decimal("0.01"),
         size=10,
         timestamp_ms=1704067200000,  # 2024-01-01T00:00:00 UTC
-        median_size=1.0,
-        ratio=5.0,
         rule_name="abs_min",
     )
 

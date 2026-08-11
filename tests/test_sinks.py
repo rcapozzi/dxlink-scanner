@@ -19,8 +19,6 @@ def test_stdout_sink_outputs_jsonl():
         price=Decimal("1.23"),
         size=500,
         timestamp_ms=1722355200000,
-        median_size=50.0,
-        ratio=10.0,
         rule_name="size_mult",
     )
 
@@ -35,5 +33,4 @@ def test_stdout_sink_outputs_jsonl():
     assert data["size"] == 500
     assert data["price"] == "1.23"
     assert data["rule"] == "size_mult"
-    assert data["ratio"] == 10.0
-    assert data["median_size"] == 50.0
+    assert data["underlying_price"] is None

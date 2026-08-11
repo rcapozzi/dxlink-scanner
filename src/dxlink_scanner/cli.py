@@ -368,19 +368,33 @@ async def _run_scanner(
         await strike_mgr.initial_scan()
 
         # Shutdown monitor: checks both signal event and daily cutoff
+        # Futures (ES, NQ, etc.) trade overnight — only shut down at
+        # market close if there are no futures contracts in the watchlist.
+        has_futures = any(t.option_type == "futures" for t in config.watchlist.tickers)
+
         async def _shutdown_monitor() -> None:
-            """Wait for SIGTERM or 17:00 ET market close."""
-            now = dt.datetime.now(dt.UTC)
-            # 17:00 ET = 21:00 UTC (or 22:00 UTC during DST)
-            # Check if we're past market close
-            market_close_hour = 21 if now.month in (3, 4, 5, 6, 7, 8, 9, 10, 11, 12) else 22
+            """Wait for SIGTERM or market close."""
             while True:
                 if shutdown_event is not None and shutdown_event.is_set():
                     logger.info("Shutdown signal received")
                     return
-                if dt.datetime.now(dt.UTC).hour >= market_close_hour:
-                    logger.info("Market close reached (%d:00 UTC) — shutting down", market_close_hour)
-                    return
+                now = dt.datetime.now(dt.UTC)
+                now_et = now - dt.timedelta(hours=4)  # approx ET (no DST handling for now)
+                # For futures, markets close at 17:00 ET then reopen at 18:00 ET.
+                # Only shut down if we're past the final close (17:00 ET next day)
+                # — i.e., the overnight session has ended.
+                # Simple heuristic: if it's Friday 17:30+ ET, shut down (weekend).
+                # Otherwise, if has_futures, never auto-shutdown (futures trade overnight).
+                if has_futures:
+                    # Futures trade overnight; only auto-exit on weekends after 17:30 ET Friday
+                    if now_et.weekday() == 4 and now_et.hour >= 17:  # Friday 17:00+ ET
+                        logger.info("Futures weekend shutdown (Friday close) — exiting")
+                        return
+                else:
+                    # Equity options only — shut down at 17:00 ET (21:00 UTC)
+                    if now_et.hour >= 17:
+                        logger.info("Market close reached (17:00 ET) — shutting down")
+                        return
                 await asyncio.sleep(10)
 
         monitor = asyncio.create_task(_shutdown_monitor())

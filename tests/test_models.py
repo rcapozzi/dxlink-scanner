@@ -52,12 +52,10 @@ def test_alert():
         price=Decimal("1.23"),
         size=500,
         timestamp_ms=1722355200000,
-        median_size=50.0,
-        ratio=10.0,
         rule_name="size_mult",
     )
     assert alert.rule_name == "size_mult"
-    assert alert.ratio == 10.0
+    assert alert.severity == "high"
 
 
 def test_rolling_stats_median_odd():

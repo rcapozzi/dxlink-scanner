@@ -342,13 +342,8 @@ class CELRuleEngine:
                             price=event.price,
                             size=event.size,
                             timestamp_ms=_to_epoch_ms(event.timestamp) or 0,
-                            median_size=0.0,
-                            ratio=0.0,
                             rule_name=rule.name,
                             severity=rule.severity,
-                            bid_price=event.bid_price,
-                            ask_price=event.ask_price,
-                            trade_type=event.trade_type,
                             underlying_price=underlying_price,
                         )
                 except Exception as e:

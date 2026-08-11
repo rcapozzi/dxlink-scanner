@@ -57,7 +57,7 @@ outputs:
     timeout_seconds: 5
     max_retries: 3
   data_dir: "data/events"
-  persist_events: false
+  persist_events: true
 
 stream:
   backpressure_queue_size: 500

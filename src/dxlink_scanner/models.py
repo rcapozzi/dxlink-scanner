@@ -206,27 +206,18 @@ class Alert:
         price: Trade price at trigger time.
         size: Trade size at trigger time.
         timestamp_ms: Epoch milliseconds when the trade was received.
-        median_size: Rolling median size (0.0 for absolute threshold alerts).
-        ratio: Size/median ratio (0.0 for absolute threshold alerts).
         rule_name: Name of the rule that triggered.
         severity: Alert severity level (info, low, medium, high, critical).
-        bid_price: Bid price at trigger time.
-        ask_price: Ask price at trigger time.
-        trade_type: Trade type (buy, sell, etc.).
-        underlying_price: Most recent underlying price at trigger time.
+        underlying_price: Most recent underlying price at trigger time,
+            derived from Quote mid_price (bid+ask)/2 on the underlying.
     """
 
     symbol: str
     price: Decimal
     size: int
     timestamp_ms: int
-    median_size: float
-    ratio: float
     rule_name: str
     severity: str = "high"
-    bid_price: Decimal | None = None
-    ask_price: Decimal | None = None
-    trade_type: str | None = None
     underlying_price: float | None = None
 
 

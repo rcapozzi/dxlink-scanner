@@ -28,14 +28,9 @@ def _alert_to_dict(alert: Alert) -> dict[str, Any]:
         "price": str(alert.price),
         "size": alert.size,
         "timestamp_ms": alert.timestamp_ms,
-        "median_size": alert.median_size,
-        "ratio": alert.ratio,
         "rule": alert.rule_name,
         "severity": alert.severity,
-        "bid_price": str(alert.bid_price) if alert.bid_price else None,
-        "ask_price": str(alert.ask_price) if alert.ask_price else None,
-        "trade_type": alert.trade_type,
-        "underlying_price": str(alert.underlying_price) if alert.underlying_price is not None else None,
+        "underlying_price": alert.underlying_price,
     }
 
 

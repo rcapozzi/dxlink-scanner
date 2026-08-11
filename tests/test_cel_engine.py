@@ -21,8 +21,6 @@ def make_event(
         price=Decimal(str(price)),
         size=size,
         timestamp=datetime(2024, 1, 1, 10, 0, tzinfo=UTC),
-        bid_price=Decimal("2.45"),
-        ask_price=Decimal("2.55"),
     )
 
 

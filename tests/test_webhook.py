@@ -17,8 +17,6 @@ def alert() -> Alert:
         price=Decimal("1.23"),
         size=500,
         timestamp_ms=1722355200000,
-        median_size=50.0,
-        ratio=10.0,
         rule_name="size_mult",
     )
 
