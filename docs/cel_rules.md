@@ -112,6 +112,8 @@ activation = {
         "price": 2.50,           # float (Decimal converted)
         "size": 150,             # int
         "timestamp": "2025-07-31T14:30:00+00:00",  # ISO string
+        "delta": 0.50,           # float (from TheoPrice, 0.0 if no delta)
+        "delta_weighted_size": 75,  # int (|size * delta|, equals size if no delta)
         "bid_price": 2.45,       # float or null
         "ask_price": 2.55,       # float or null
         "trade_type": "buy",     # string or null
@@ -154,6 +156,8 @@ activation = {
 | `trade.price` | `double` | Always | Decimal → float |
 | `trade.size` | `int` | Always | Contract count |
 | `trade.timestamp` | `string` | Always | ISO 8601 UTC |
+| `trade.delta` | `double` | Option symbols | From TheoPrice; 0.0 if unavailable |
+| `trade.delta_weighted_size` | `int` | Option symbols | `int(size * |delta|)`; equals `size` if delta unavailable |
 | `trade.bid_price` | `double?` | Quote present | Null if no quote |
 | `trade.ask_price` | `double?` | Quote present | Null if no quote |
 | `trade.trade_type` | `string?` | Always | "buy"/"sell"/null |
@@ -184,6 +188,8 @@ activation = {
 | `stats.eth_std` | `double` | Session-aware | ETH std (V2) |
 | `config.abs_min_size` | `int` | Always | From detection config |
 | `config.size_mult` | `double` | Always | From detection config |
+| `config.p95_size` | `double` | If thresholds loaded | 95th percentile trade size for this symbol |
+| `config.p95_delta_weighted_size` | `double` | If thresholds loaded | 95th percentile delta-weighted size for this symbol |
 
 ## Rule Configuration
 
@@ -296,6 +302,9 @@ trade.size > stats.median + 3.0 * stats.mad
 
 # Volume surge (current > 2x mean)
 trade.size > stats.mean * 2.0
+
+# Delta-weighted anomaly (significant directional exposure)
+trade.delta_weighted_size > stats.p95_delta_weighted_size
 ```
 
 ### Time-Gated Rules
@@ -319,6 +328,10 @@ trade.size >= config.abs_min_size && trade.size > stats.median * config.size_mul
 
 # Custom size threshold
 trade.size >= 200 && trade.price > 1.0
+
+# P95 significance thresholds (loaded from significance_meta.json)
+trade.size >= config.p95_size
+trade.delta_weighted_size >= config.p95_delta_weighted_size
 ```
 
 ### Composite Rules

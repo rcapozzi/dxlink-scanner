@@ -74,6 +74,7 @@ class CELRuleEngine:
         underlying_symbols: set[str] | None = None,
         underlying_symbol_map: dict[str, str] | None = None,
         snapshot_store: SnapshotStore | None = None,
+        significance_thresholds: dict[str, dict[str, float]] | None = None,
     ) -> None:
         self._config = config
         self._stats = stats
@@ -81,6 +82,7 @@ class CELRuleEngine:
         self._underlying_symbols = underlying_symbols or set()
         self._underlying_symbol_map: dict[str, str] = underlying_symbol_map or {}
         self._snapshot_store = snapshot_store
+        self._significance_thresholds: dict[str, dict[str, float]] = significance_thresholds or {}
 
         # Per-symbol rules: symbol -> list of (rule, compiled_expr)
         self._per_symbol_rules: dict[str, list[CelAlertRule]] = per_symbol_rules or {}
@@ -175,6 +177,8 @@ class CELRuleEngine:
         is_option = symbol not in self._underlying_symbols
 
         # Core trade fields — convert Decimal to float for CEL compatibility
+        delta_float = float(event.delta) if event.delta else 0.0
+        delta_weighted_size = int(float(event.size) * abs(delta_float)) if delta_float else event.size
         trade_data: dict[str, Any] = {
             "symbol": symbol,
             "is_option": is_option,
@@ -182,6 +186,8 @@ class CELRuleEngine:
             "size": event.size,
             # CEL doesn't natively support datetime; convert to ISO string
             "timestamp": event.timestamp.isoformat() if event.timestamp else None,
+            "delta": delta_float,
+            "delta_weighted_size": delta_weighted_size,
             "bid_price": float(event.bid_price) if event.bid_price else None,
             "ask_price": float(event.ask_price) if event.ask_price else None,
             "trade_type": event.trade_type,
@@ -228,6 +234,12 @@ class CELRuleEngine:
             "abs_min_size": self._config.abs_min_size,
             "size_mult": self._config.size_mult,
         }
+
+        # Significance thresholds from daily P95 analysis
+        thresholds = self._significance_thresholds.get(symbol) or self._significance_thresholds.get("default")
+        if thresholds:
+            config_data["p95_size"] = thresholds.get("p95_size", 0.0)
+            config_data["p95_delta_weighted_size"] = thresholds.get("p95_delta_weighted_size", 0.0)
 
         # Determine if this is an option symbol or an underlying
         option_data: dict[str, Any] | None = None

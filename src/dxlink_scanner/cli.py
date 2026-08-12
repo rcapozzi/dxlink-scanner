@@ -13,6 +13,7 @@ from typing import Annotated
 import typer
 from dotenv import load_dotenv
 from tastytrade.dxfeed import Quote
+from tastytrade.dxfeed import TheoPrice as DXTheoPrice
 from tastytrade.dxfeed import TimeAndSale as DXTimeAndSale
 from tastytrade.streamer import DXLinkStreamer
 
@@ -24,6 +25,7 @@ from dxlink_scanner.models import (
     ConsolidatedEvent,
     TimeAndSaleEvent,
     normalize_quote,
+    normalize_theoprice,
     normalize_timeandsale,
 )
 from dxlink_scanner.rules import CELRuleEngine
@@ -106,6 +108,9 @@ async def _consume_consolidated(
 
         # Only TAS events go to rule engine + sinks
         if event.source_type == "TIME_AND_SALE":
+            # Enrich TAS event with delta from the latest TheoPrice snapshot
+            snap = store.get(event.symbol)
+            delta = snap.delta if snap and snap.delta is not None else None
             tas_event = TimeAndSaleEvent(
                 symbol=event.symbol,
                 price=event.last_trade_price or Decimal("0"),
@@ -119,6 +124,7 @@ async def _consume_consolidated(
                 bid_price=event.bid_price,
                 ask_price=event.ask_price,
                 trade_type=event.last_trade_type,
+                delta=delta,
             )
             alert = rules.process(tas_event)
             if alert:
@@ -133,6 +139,8 @@ def _get_normalize_fn(event_type: type) -> Callable[..., ConsolidatedEvent]:
         return normalize_quote
     if event_type is DXTimeAndSale:
         return normalize_timeandsale
+    if event_type is DXTheoPrice:
+        return normalize_theoprice
     raise ValueError(f"Unknown event type: {event_type}")
 
 
@@ -215,6 +223,24 @@ async def _run_scanner(
     session = auth.get_session()
     await session.refresh(force=True)
     logger.info("Authenticated with Tastytrade")
+
+    # Load significance thresholds if configured
+    significance_thresholds: dict[str, dict[str, float]] = {}
+    thresholds_file = config.outputs.significance_thresholds_file
+    thresholds_path = Path(thresholds_file) if thresholds_file else None
+    if thresholds_path and thresholds_path.exists():
+        import json as _json
+        try:
+            raw = _json.loads(thresholds_path.read_text())
+            significance_thresholds = raw.get(
+                "symbols", raw.get("default", {})
+            )
+            logger.info(
+                "Loaded %d significance threshold symbols from %s",
+                len(significance_thresholds), thresholds_path,
+            )
+        except Exception as e:
+            logger.warning("Failed to load significance thresholds: %s", e)
 
     # Bootstrap: fetch option chains for each ticker
     loader = ChainLoader(session=session)
@@ -318,6 +344,7 @@ async def _run_scanner(
         underlying_symbols=underlying_symbols_set,
         underlying_symbol_map=underlying_map,
         snapshot_store=store,
+        significance_thresholds=significance_thresholds,
     )
     logger.info("Using CEL rule engine")
     sinks: list[SinkType] = []
@@ -339,19 +366,23 @@ async def _run_scanner(
         await streamer.subscribe(Quote, underlying_symbols)
         # TimeAndSale on both the underlying AND all option symbols
         await streamer.subscribe(DXTimeAndSale, underlying_symbols + all_symbols)
+        # TheoPrice on all option symbols (for delta & Greeks)
+        if all_symbols:
+            await streamer.subscribe(DXTheoPrice, all_symbols)
         logger.info(
-            "Subscribed to Quote(%s) + TimeAndSale(%d) symbols",
+            "Subscribed to Quote(%s) + TimeAndSale(%d) + TheoPrice(%d) symbols",
             ','.join(underlying_symbols),
             len(underlying_symbols) + len(all_symbols),
+            len(all_symbols),
         )
         logger.info("Listening for volume anomalies...")
 
-        # Unified consumer: two producers → bounded queue → single consumer
+        # Unified consumer: three producers → bounded queue → single consumer
         queue: asyncio.Queue[ConsolidatedEvent] = asyncio.Queue(maxsize=config.stream.backpressure_queue_size)
         counter = [0]  # shared event counter
 
         producers = []
-        for event_type in (Quote, DXTimeAndSale):
+        for event_type in (Quote, DXTimeAndSale, DXTheoPrice):
             normalize_fn = _get_normalize_fn(event_type)
             t = asyncio.create_task(_produce_events(streamer, event_type, normalize_fn, queue, counter))
             producers.append(t)

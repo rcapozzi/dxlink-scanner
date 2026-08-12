@@ -9,6 +9,7 @@ from decimal import Decimal
 from typing import Literal
 
 from tastytrade.dxfeed import Quote as DXQuote
+from tastytrade.dxfeed import TheoPrice as DXTheoPrice
 from tastytrade.dxfeed import TimeAndSale as DXTimeAndSale
 
 
@@ -49,7 +50,7 @@ def _parse_dt(ts: object) -> dt.datetime | None:
 class ConsolidatedSnapshot:
     """Latest merged state for a single symbol.
 
-    Updated incrementally as Quote and TimeAndSale events arrive.
+    Updated incrementally as Quote, TimeAndSale, and TheoPrice events arrive.
     Stored in a dict keyed by symbol in real-time processing.
     """
 
@@ -62,6 +63,14 @@ class ConsolidatedSnapshot:
     last_trade_size: int | None = None
     last_trade_time: int | None = None  # epoch ms
     last_trade_type: str | None = None
+
+    # TheoPrice / Greeks
+    theo_price: Decimal | None = None
+    underlying_price: Decimal | None = None
+    delta: Decimal | None = None
+    gamma: Decimal | None = None
+    dividend: Decimal | None = None
+    interest: Decimal | None = None
 
     # Derived
     mid_price: Decimal | None = None
@@ -77,7 +86,7 @@ class ConsolidatedEvent:
 
     event_id: int
     received_at: dt.datetime
-    source_type: Literal["QUOTE", "TIME_AND_SALE"]
+    source_type: Literal["QUOTE", "TIME_AND_SALE", "THEO_PRICE"]
     symbol: str
     bid_price: Decimal | None = None
     ask_price: Decimal | None = None
@@ -86,6 +95,13 @@ class ConsolidatedEvent:
     last_trade_time: int | None = None  # epoch ms
     last_trade_type: str | None = None
     event_time_ms: int | None = None
+    # TheoPrice fields
+    theo_price: Decimal | None = None
+    underlying_price: Decimal | None = None
+    delta: Decimal | None = None
+    gamma: Decimal | None = None
+    dividend: Decimal | None = None
+    interest: Decimal | None = None
 
 
 def normalize_quote(q: DXQuote, event_id: int) -> ConsolidatedEvent:
@@ -115,6 +131,23 @@ def normalize_timeandsale(tas: DXTimeAndSale, event_id: int) -> ConsolidatedEven
     )
 
 
+def normalize_theoprice(tp: DXTheoPrice, event_id: int) -> ConsolidatedEvent:
+    """Convert a DXLink TheoPrice to ConsolidatedEvent."""
+    return ConsolidatedEvent(
+        event_id=event_id,
+        received_at=dt.datetime.now(dt.UTC),
+        source_type="THEO_PRICE",
+        symbol=tp.event_symbol,
+        theo_price=Decimal(str(tp.price)) if tp.price else None,
+        underlying_price=Decimal(str(tp.underlying_price)) if tp.underlying_price else None,
+        delta=Decimal(str(tp.delta)) if tp.delta else None,
+        gamma=Decimal(str(tp.gamma)) if tp.gamma else None,
+        dividend=Decimal(str(tp.dividend)) if tp.dividend else None,
+        interest=Decimal(str(tp.interest)) if tp.interest else None,
+        event_time_ms=_to_epoch_ms(tp.event_time),
+    )
+
+
 def merge_into_snapshot(snap: ConsolidatedSnapshot, event: ConsolidatedEvent) -> ConsolidatedSnapshot:
     """Merge a ConsolidatedEvent into an existing snapshot."""
     now = dt.datetime.now(dt.UTC)
@@ -127,6 +160,13 @@ def merge_into_snapshot(snap: ConsolidatedSnapshot, event: ConsolidatedEvent) ->
         snap.last_trade_size = event.last_trade_size
         snap.last_trade_time = _to_epoch_ms(event.last_trade_time) if event.last_trade_time else None
         snap.last_trade_type = event.last_trade_type
+    elif event.source_type == "THEO_PRICE":
+        snap.theo_price = event.theo_price
+        snap.underlying_price = event.underlying_price
+        snap.delta = event.delta
+        snap.gamma = event.gamma
+        snap.dividend = event.dividend
+        snap.interest = event.interest
 
     snap.updated_at = now
 
@@ -174,6 +214,7 @@ class TimeAndSaleEvent:
     bid_price: Decimal | None = None
     ask_price: Decimal | None = None
     trade_type: str | None = None
+    delta: Decimal | None = None  # From TheoPrice, for delta-weighted size
 
 
 @dataclass(frozen=True, slots=True)

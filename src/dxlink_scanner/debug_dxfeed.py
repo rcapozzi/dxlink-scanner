@@ -32,7 +32,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
-from tastytrade.dxfeed import Quote, TimeAndSale
+from tastytrade.dxfeed import Quote, TheoPrice, TimeAndSale
 from tastytrade.instruments import Option, get_future_option_chain, get_option_chain
 from tastytrade.market_data import get_market_data_by_type
 from tastytrade.session import Session as TastyTradeSession
@@ -316,13 +316,16 @@ async def _run(underlyings: list[str]) -> None:
         await streamer.subscribe(Quote, underlying_symbols)
         # TimeAndSale on both the underlying AND all option symbols
         await streamer.subscribe(TimeAndSale, underlying_symbols + symbols)
-        logger.info("Listening for Quote + TimeAndSale events... (Ctrl-C to stop)")
+        # TheoPrice on all option symbols (for delta & Greeks)
+        await streamer.subscribe(TheoPrice, symbols)
+        logger.info("Listening for Quote + TimeAndSale + TheoPrice events... (Ctrl-C to stop)")
 
         # Consume all event streams concurrently; use return_exceptions=True
         # to avoid ExceptionGroup when the streamer closes or one stream errors.
         quote_task = asyncio.create_task(_consume_quote(streamer))
         tas_task = asyncio.create_task(_consume_timeandsale(streamer))
-        results = await asyncio.gather(quote_task, tas_task, return_exceptions=True)
+        theo_task = asyncio.create_task(_consume_theoprice(streamer))
+        results = await asyncio.gather(quote_task, tas_task, theo_task, return_exceptions=True)
         for i, r in enumerate(results):
             if isinstance(r, Exception):
                 logger.error("Stream consumer %d exited with error: %s", i, r)
@@ -358,6 +361,23 @@ async def _consume_timeandsale(streamer: DXLinkStreamer) -> None:
             tas.bid_price,
             tas.ask_price,
             tas.event_flags,
+        )
+
+
+async def _consume_theoprice(streamer: DXLinkStreamer) -> None:
+    """Listen for TheoPrice events and log them."""
+    async for tp in streamer.listen(TheoPrice):
+        logger.info(
+            "TheoPrice  symbol=%s  theo=%0.2f  underlying=%0.2f  "
+            "delta=%0.4f  gamma=%0.4f  div=%0.4f  int=%0.4f  time=%s",
+            tp.event_symbol,
+            tp.price,
+            tp.underlying_price,
+            tp.delta,
+            tp.gamma,
+            tp.dividend,
+            tp.interest,
+            tp.event_time,
         )
 
 

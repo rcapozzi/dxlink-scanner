@@ -17,7 +17,6 @@ import json
 import logging
 import os
 import sys
-import tempfile
 from pathlib import Path
 
 import pyarrow as pa  # type: ignore[import-untyped]
@@ -28,19 +27,80 @@ logger = logging.getLogger(__name__)
 TARGET_FILE_SIZE_BYTES = 128 * 1024 * 1024  # 128 MB
 
 
-def compact_date_partition(partition_dir: Path, target_size: int = TARGET_FILE_SIZE_BYTES) -> int:
-    """Compact all parquet files in a date partition into fewer, larger files.
+def _compute_percentile(sorted_values: list, p: float) -> float:
+    """Compute the p-th percentile from a sorted list (linear interpolation)."""
+    if not sorted_values:
+        return 0.0
+    n = len(sorted_values)
+    idx = (p / 100.0) * (n - 1)
+    lo = int(idx)
+    hi = min(lo + 1, n - 1)
+    if lo == hi:
+        return float(sorted_values[lo])
+    frac = idx - lo
+    return float(sorted_values[lo] + (sorted_values[hi] - sorted_values[lo]) * frac)
 
-    Reads each day's files into a single combined table, then rewrites
-    in target-size chunks. Returns number of files written.
 
-    Args:
-        partition_dir: Directory containing events_v1_*.parquet files for one date.
-        target_size: Target file size in bytes.
+def compute_significance_thresholds(combined: pa.Table) -> dict[str, dict[str, float]]:
+    """Compute P95 significance thresholds from combined TAS event data.
 
-    Returns:
-        Number of output files written.
+    Returns a dict keyed by symbol (streamer symbol or underlying), each with:
+      - p95_size: 95th percentile of raw trade sizes (abs(int))
+      - p95_delta_weighted_size: 95th percentile of |size * delta|
+
+    If delta is not available for a symbol, delta_weighted_size mirrors size.
     """
+    # Filter to TAS events only
+    import pyarrow.compute as pc
+    tas_mask = pc.equal(combined.column("source_type"), "TIME_AND_SALE")
+    tas = combined.filter(tas_mask)
+
+    if tas.num_rows == 0:
+        return {}
+
+    # Safely extract columns (may be missing in older parquet files)
+    col = tas.column
+    symbols = col("symbol").to_pylist() if "symbol" in tas.column_names else [None] * tas.num_rows
+    sizes = col("last_trade_size").to_pylist() if "last_trade_size" in tas.column_names else [None] * tas.num_rows
+    deltas = col("delta").to_pylist() if "delta" in tas.column_names else [None] * tas.num_rows
+
+    symbol_data: dict[str, list[tuple[int, float]]] = {}  # symbol -> pairs
+
+    for sym, size, delta in zip(symbols, sizes, deltas, strict=True):
+        if sym is None or size is None:
+            continue
+        size_int = int(size)
+        delta_val = float(delta) if delta is not None else 0.0
+        delta_weighted = size_int * abs(delta_val) if delta_val else size_int
+        symbol_data.setdefault(sym, []).append((size_int, delta_weighted))
+
+    thresholds: dict[str, dict[str, float]] = {}
+    default_sizes: list[int] = []
+    default_dw: list[float] = []
+
+    for sym, pairs in symbol_data.items():
+        raw_sizes = sorted([s for s, _ in pairs])
+        dw_sizes = sorted([dw for _, dw in pairs])
+        p95_size = _compute_percentile(raw_sizes, 95)
+        p95_dw = _compute_percentile(dw_sizes, 95)
+        thresholds[sym] = {
+            "p95_size": round(p95_size, 2),
+            "p95_delta_weighted_size": round(p95_dw, 2),
+        }
+        default_sizes.extend(raw_sizes)
+        default_dw.extend(dw_sizes)
+
+    # Also include a default (underlying-level) threshold
+    if default_sizes:
+        thresholds["default"] = {
+            "p95_size": round(_compute_percentile(sorted(default_sizes), 95), 2),
+            "p95_delta_weighted_size": round(_compute_percentile(sorted(default_dw), 95), 2),
+        }
+
+    return thresholds
+
+
+def compact_date_partition(partition_dir: Path, target_size: int = TARGET_FILE_SIZE_BYTES) -> int:
     parquet_files = sorted(partition_dir.glob("events_v*_*.parquet"))
     if not parquet_files:
         logger.info("No parquet files found in %s", partition_dir)
@@ -63,7 +123,6 @@ def compact_date_partition(partition_dir: Path, target_size: int = TARGET_FILE_S
 
     # Write compacted files
     written = 0
-    schema = combined.schema
     total_rows = combined.num_rows
     offset = 0
     while offset < total_rows:
@@ -83,11 +142,23 @@ def compact_date_partition(partition_dir: Path, target_size: int = TARGET_FILE_S
 
     # Update session_meta.json
     meta_path = partition_dir / "session_meta.json"
-    if meta_path.exists():
-        meta = json.loads(meta_path.read_text())
-        meta["compacted_files"] = written
-        meta["compacted_at"] = dt.datetime.now(dt.UTC).isoformat()
-        meta_path.write_text(json.dumps(meta, indent=2))
+    meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+    meta["compacted_files"] = written
+    meta["compacted_at"] = dt.datetime.now(dt.UTC).isoformat()
+    meta["row_count"] = combined.num_rows
+    meta_path.write_text(json.dumps(meta, indent=2))
+
+    # Compute and write significance thresholds
+    thresholds = compute_significance_thresholds(combined)
+    thresholds_path = partition_dir / "significance_meta.json"
+    thresholds_output = {
+        "date": partition_dir.name,
+        "computed_at": meta["compacted_at"],
+        "row_count": combined.num_rows,
+        "symbols": thresholds,
+    }
+    thresholds_path.write_text(json.dumps(thresholds_output, indent=2))
+    logger.info("Computed %d significance thresholds for %s", len(thresholds), thresholds_path.name)
 
     # Clean up
     gc.collect()

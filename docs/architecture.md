@@ -95,16 +95,20 @@ option_symbols = [opt.streamer_symbol for opt in chains.get(today, [])]
 
 **Purpose**: Subscribe to real-time market data via WebSocket.
 
-**Two Producers** (run concurrently):
+**Three Producers** (run concurrently):
 ```python
 # In cli.py:_run_scanner()
 async def _produce_quotes():
-    async for quote in streamer.listen_quotes(symbols):
-        await queue.put(("QUOTE", quote))
+    async for quote in streamer.listen(Quote):
+        await queue.put(normalize_quote(quote))
 
 async def _produce_time_and_sales():
-    async for tas in streamer.listen_time_and_sales(symbols):
-        await queue.put(("TIME_AND_SALE", tas))
+    async for tas in streamer.listen(TimeAndSale):
+        await queue.put(normalize_timeandsale(tas))
+
+async def _produce_theoprices():
+    async for tp in streamer.listen(TheoPrice):
+        await queue.put(normalize_theoprice(tp))
 ```
 
 **Subscription Strategy**:
@@ -112,7 +116,7 @@ async def _produce_time_and_sales():
 |------------|---------|-------|
 | Quote | All option symbols + underlying futures | Best bid/ask; mid_price = (bid+ask)/2 |
 | TimeAndSale | All option symbols | Trade prints | last_trade_price, last_trade_size, trade_type |
-| TheoPrice | All 0DTE symbols (delta_filter=true) | Used for delta filtering; unsubscribed after filter |
+| TheoPrice | All option symbols (continuous) | Delta, gamma, dividend, interest, theo_price |
 
 ### 4. Backpressure Queue (`asyncio.Queue`)
 
@@ -140,13 +144,13 @@ except asyncio.TimeoutError:
 async def _consume_consolidated(queue, store, rules, sinks):
     while True:
         event = await queue.get()
-
-        # Merge into snapshot
         store.ingest(event)
 
-        # Evaluate rules (if TimeAndSale)
+        # Evaluate rules (if TimeAndSale) — enrich with delta from snapshot
         if event.source_type == "TIME_AND_SALE":
-            tas_event = to_time_and_sale_event(event)
+            snap = store.get(event.symbol)
+            delta = snap.delta if snap else None
+            tas_event = to_time_and_sale_event(event, delta=delta)
             alert = rules.process(tas_event)
             if alert:
                 for sink in sinks:
@@ -160,6 +164,7 @@ async def _consume_consolidated(queue, store, rules, sinks):
 ||-------------|------------|---------------------|
 || Quote | `normalize_quote()` | bid/ask price |
 || TimeAndSale | `normalize_timeandsale()` | last_trade_price, last_trade_size, last_trade_type |
+|| TheoPrice | `normalize_theoprice()` | theo_price, underlying_price, delta, gamma, dividend, interest |
 
 ### 6. Snapshot Store (`src/dxlink_scanner/snapshot_store.py`)
 
@@ -228,11 +233,13 @@ watchlist:
 **Activation Context** (variables available in CEL expressions):
 ```python
 activation = {
-    "trade": {symbol, price, size, timestamp, bid_price, ask_price, trade_type},
+    "trade": {symbol, price, size, timestamp, delta, delta_weighted_size,
+              bid_price, ask_price, trade_type},
     "option": {type, strike},  # if option
     "underlying": {symbol, price},  # if underlying
-    "stats": {median, mad, count, mean},  # rolling stats for symbol
-    "config": {abs_min_size, size_mult},
+    "stats": {median, mad, count, mean, std, p25, p75, p90, p95, p99,
+              z_score, modified_z_score, rth_*, eth_*},
+    "config": {abs_min_size, size_mult, p95_size, p95_delta_weighted_size},
 }
 ```
 
@@ -321,7 +328,7 @@ logger.info("Shutdown complete")
 
 | Component | Concurrency | Notes |
 |-----------|-------------|-------|
-| DXLink producers | 2 async tasks | One per event type |
+| DXLink producers | 3 async tasks | One per event type |
 | Queue | `asyncio.Queue` | Thread-safe, single consumer |
 | Consumer | 1 async task | Sequential processing |
 | SnapshotStore | Single-threaded | All access via consumer task |
@@ -344,6 +351,7 @@ class TimeAndSaleEvent:
     bid_price: Decimal | None = None
     ask_price: Decimal | None = None
     trade_type: str | None = None
+    delta: Decimal | None = None  # From TheoPrice, for delta-weighted size
 ```
 
 ### Alert (output from rules)
@@ -366,16 +374,26 @@ class ConsolidatedSnapshot:
     symbol: str
     underlying_symbol: str
     updated_at: datetime
+    # Quote-derived
     bid_price: Decimal | None = None
     ask_price: Decimal | None = None
+    mid_price: Decimal | None = None
+    spread: Decimal | None = None
+    spread_bps: float | None = None
+    # TAS-derived
     last_trade_price: Decimal | None = None
     last_trade_size: int | None = None
     last_trade_time: int | None = None      # epoch ms
     last_trade_type: str | None = None
-    mid_price: Decimal | None = None
-    spread: Decimal | None = None
-    spread_bps: float | None = None
     trade_vs_mid: Decimal | None = None
+    # TheoPrice-derived
+    theo_price: Decimal | None = None
+    underlying_price: Decimal | None = None  # from TheoPrice
+    delta: Decimal | None = None
+    gamma: Decimal | None = None
+    dividend: Decimal | None = None
+    interest: Decimal | None = None
+    # Lifecycle
     evict_at: int | None = None             # epoch ms for TTL
 ```
 

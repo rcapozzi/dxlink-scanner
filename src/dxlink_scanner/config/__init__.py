@@ -120,6 +120,10 @@ class OutputsConfig(BaseModel):
         default=False,
         description="Whether to persist events to parquet (also settable via --persist CLI flag)",
     )
+    significance_thresholds_file: str | None = Field(
+        default=None,
+        description="Path to significance_thresholds.json (from compact_parquet.py).",
+    )
 
 
 class LoggingConfig(BaseModel):

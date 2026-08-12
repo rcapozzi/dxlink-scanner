@@ -43,6 +43,14 @@ schema_v1 = pa.schema([
     ("last_trade_time", pa.int64()),       # epoch ms
     ("last_trade_type", pa.string()),
 
+    # TheoPrice fields — from TheoPrice event
+    ("theo_price", pa.string()),
+    ("underlying_price", pa.string()),
+    ("delta", pa.string()),
+    ("gamma", pa.string()),
+    ("dividend", pa.string()),
+    ("interest", pa.string()),
+
     # Raw exchange timestamps (all epoch ms)
     ("event_time_ms", pa.int64()),
     ("time_ms", pa.int64()),
@@ -88,7 +96,7 @@ Version encoded in filename for easy identification.
 
 Each date partition contains `session_meta.json`:
 
-```json
+``json
 {
   "session_id": "018f4a2b-3c5d-7e8f-9a0b-c1d2e3f4a5b6",
   "schema_version": "v1",
@@ -99,7 +107,8 @@ Each date partition contains `session_meta.json`:
     "events_v1_018f4a2b-3c5d-7e8f-9a0b-c1d2e3f4a5b6_1722445200.parquet"
   ],
   "compacted_files": 1,
-  "compacted_at": "2024-08-01T02:00:00+00:00"
+  "compacted_at": "2024-08-01T02:00:00+00:00",
+  "row_count": 123456
 }
 ```
 
@@ -161,9 +170,10 @@ FROM read_parquet('data/events/2024-07-31/*.parquet');
 ### Source Type Values
 
 | Value | Description | Typical Fields Present |
-|-------|-------------|------------------------|
-| `QUOTE` | Best bid/ask | bid/ask price/size, bid/ask time |
-| `TIME_AND_SALE` | Trade print | last_trade_price, size, trade_type, exchange |
+||-------|-------------|------------------------|
+|| `QUOTE` | Best bid/ask | bid/ask price |
+|| `TIME_AND_SALE` | Trade print | last_trade_price, last_trade_size, trade_type |
+|| `THEO_PRICE` | Theoretical pricing | theo_price, underlying_price, delta, gamma, dividend, interest |
 
 ## Writing Parquet (SnapshotStore)
 
@@ -279,6 +289,7 @@ uv run python scripts/compact_parquet.py --data-dir data/events --date 2024-07-3
 4. Slice and write compacted files with `zstd` compression
 5. Remove original files
 6. Update `session_meta.json` with compaction info
+7. Compute P95 significance thresholds → write `significance_meta.json`
 
 ### Scheduling (Cron)
 ```bash
@@ -386,3 +397,34 @@ LIMIT 1000;
 3. **Version in filename** — `events_v{N}_...` prefix
 4. **Document changes** — Update `schemas/v{N}.py` with comments
 5. **Test round-trip** — Write → read → verify in test suite
+
+## Significance Thresholds (`significance_meta.json`)
+
+### Purpose
+Provides statistically-derived P95 thresholds for trade size and delta-weighted trade size, enabling significance-based alert rules rather than arbitrary constants.
+
+### Output Format
+```json
+{
+  "date": "2024-07-31",
+  "computed_at": "2024-08-01T02:00:00+00:00",
+  "row_count": 123456,
+  "symbols": {
+    "SPY260812C00500000": {
+      "p95_size": 150.0,
+      "p95_delta_weighted_size": 75.0
+    },
+    "default": {
+      "p95_size": 80.0,
+      "p95_delta_weighted_size": 40.0
+    }
+  }
+}
+```
+
+### CEL Usage
+When `significance_thresholds_file` is set in config, thresholds are loaded into the CEL engine's `config` context:
+```cel
+trade.delta_weighted_size >= config.p95_delta_weighted_size
+trade.size >= config.p95_size
+```

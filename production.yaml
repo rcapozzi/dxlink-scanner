@@ -1,6 +1,3 @@
-# Production scanner configuration
-# Focuses on the most liquid large-cap options: SPY, SPX, ES
-
 tastytrade:
   client_id: "${TASTY_CLIENT_ID}"
   client_secret: "${TASTY_CLIENT_SECRET}"
@@ -12,33 +9,42 @@ watchlist:
     - name: "absolute_size"
       expression: "trade.size >= 1000"
       severity: "critical"
-    # - name: "anomaly_detector"
-    #   expression: "trade.is_option && trade.size > 10 && trade.size > stats.median * 2.0"
-    #   severity: "high"
+    - name: "p95_raw_size"
+      expression: "trade.is_option && trade.size >= config.p95_size"
+      severity: "high"
+    - name: "p95_delta_weighted"
+      expression: "trade.is_option && trade.delta_weighted_size >= config.p95_delta_weighted_size"
+      severity: "high"
+    - name: "anomaly_detector"
+      expression: "trade.size > 10 && trade.size > stats.median * 2.0"
+      severity: "high"
   tickers:
-    # - symbol: "SPY"
-    #   option_type: "equity"
-    #   strikes_around_atm: 20
-    #   delta_filter: true
-    #   min_delta: 0.02
-    #   expiration_filter: "0DTE"
-    #   underlying_alert_rules:
-    #     - name: "huge_option_print"
-    #       expression: "trade.is_option && trade.size >= 90 && trade.price > .25"
-    #       severity: "high"
-    #     - name: "large_option_print"
-    #       expression: "trade.is_option && trade.size >= 50 && trade.price > .25"
-    #       severity: "medium"
-    # - symbol: "SPX"
-    #   option_type: "equity"
-    #   strikes_around_atm: 20
-    #   delta_filter: true
-    #   min_delta: 0.02
-    #   expiration_filter: "0DTE"
-    #   underlying_alert_rules:
-    #     - name: "spx_large_print"
-    #       expression: "trade.is_option && trade.size >= 50 && trade.price > 0.50"
-    #       severity: "high"
+    - symbol: "SPY"
+      option_type: "equity"
+      strikes_around_atm: 20
+      delta_filter: true
+      min_delta: 0.02
+      expiration_filter: "0DTE"
+      underlying_alert_rules:
+        - name: "huge_option_print"
+          expression: "trade.is_option && trade.size >= 90 && trade.price > .25"
+          severity: "high"
+        - name: "large_option_print"
+          expression: "trade.is_option && trade.size >= 50 && trade.price > .25"
+          severity: "medium"
+        - name: "p95_delta_weighted_spy"
+          expression: "trade.is_option && trade.delta_weighted_size >= config.p95_delta_weighted_size"
+          severity: "high"
+    - symbol: "SPX"
+      option_type: "equity"
+      strikes_around_atm: 20
+      delta_filter: true
+      min_delta: 0.02
+      expiration_filter: "0DTE"
+      underlying_alert_rules:
+        - name: "spx_large_print"
+          expression: "trade.is_option && trade.size >= 50 && trade.price > 0.50"
+          severity: "high"
     - symbol: "/ES"
       option_type: "futures"
       strikes_around_atm: 25
@@ -62,6 +68,7 @@ outputs:
     max_retries: 3
   data_dir: "data/events"
   persist_events: true
+  significance_thresholds_file: "data/events/significance_thresholds.json"
 
 stream:
   backpressure_queue_size: 500

@@ -21,6 +21,13 @@ schema_v1 = pa.schema(
         ("last_trade_size", pa.int64()),
         ("last_trade_time", pa.int64()),  # epoch ms
         ("last_trade_type", pa.string()),
+        # TheoPrice / Greeks fields
+        ("theo_price", pa.string()),
+        ("underlying_price", pa.string()),
+        ("delta", pa.string()),
+        ("gamma", pa.string()),
+        ("dividend", pa.string()),
+        ("interest", pa.string()),
         # Raw timestamps (all epoch ms)
         ("event_time_ms", pa.int64()),
         ("time_ms", pa.int64()),

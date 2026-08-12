@@ -4,10 +4,7 @@ Schema v2 extends v1 by adding top-level nullable columns for
 mid_price, spread, spread_bps, and trade_vs_mid so that
 derived Quote fields can be persisted alongside core event data.
 
-Field removals from v1: `theo_price`, `underlying_price`, `delta`, `gamma`,
-`dividend`, `interest` were dropped from the parquet schema (the corresponding
-event source is no longer subscribed). `underlying_price` is now derived from
-Quote `mid_price` at the application layer, not stored as a parquet column.
+Includes TheoPrice/Greeks fields from v1.
 """
 
 from __future__ import annotations
@@ -33,6 +30,13 @@ schema_v2 = pa.schema(
         ("time_ms", pa.int64()),
         ("time_nano_part_ms", pa.int64()),
         ("evict_at", pa.int64()),
+        # TheoPrice / Greeks fields (from v1)
+        ("theo_price", pa.string()),
+        ("underlying_price", pa.string()),
+        ("delta", pa.string()),
+        ("gamma", pa.string()),
+        ("dividend", pa.string()),
+        ("interest", pa.string()),
         # New in v2: derived Quote fields (all nullable)
         ("mid_price", pa.string()),
         ("spread", pa.string()),
@@ -65,4 +69,10 @@ v1_fields = [
     "time_ms",
     "time_nano_part_ms",
     "evict_at",
+    "theo_price",
+    "underlying_price",
+    "delta",
+    "gamma",
+    "dividend",
+    "interest",
 ]
