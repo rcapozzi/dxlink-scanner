@@ -233,6 +233,8 @@ watchlist:
     - symbol: "SPY"
       option_type: "equity"
       strikes_around_atm: 10
+      delta_filter: true           # Enable delta-based filtering
+      min_delta: 0.02              # Subscribe to options with |delta| >= 0.02
       underlying_alert_rules:
         - name: "spy_any_option_sweep"
           expression: "trade.is_option && trade.size >= 50 && trade.price > 1.0"

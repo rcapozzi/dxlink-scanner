@@ -40,6 +40,16 @@ class TickerConfig(BaseModel):
         option_type: "equity" for stock/ETF options, "futures" for index/futures options (e.g. SPX).
         strikes_around_atm: Number of strikes around ATM to subscribe to.
         expiration_filter: "0DTE" for same-day expiry only, "all" for all expirations.
+        min_delta: When using delta-based filtering, minimum absolute delta
+            to subscribe to an option symbol. Set to 0 to disable delta
+            filtering and use strikes_around_atm only.
+            (e.g. 0.02 → includes only options with |delta| >= 0.02)
+            Requires `delta_filter: true` to activate. Defaults to 0.02.
+        delta_filter: When True, use delta-based filtering instead of
+            strikes_around_atm for initial symbol selection. The scanner
+            subscribes to TheoPrice for all 0DTE symbols, filters by
+            min_delta, and unsubscribes non-qualifying symbols. Defaults
+            to False.
         alert_rules: List of CEL-based alert rules for this symbol.
             These match the exact streamer symbol (including option symbols).
         underlying_alert_rules: List of CEL-based alert rules that apply to
@@ -53,6 +63,8 @@ class TickerConfig(BaseModel):
     option_type: str = Field(default="equity", pattern=r"^(equity|futures)$")
     strikes_around_atm: int = Field(default=10, ge=1, le=50)
     expiration_filter: str = Field(default="0DTE", pattern=r"^(0DTE|all)$")
+    min_delta: float = Field(default=0.02, ge=0, le=1)
+    delta_filter: bool = Field(default=False)
     alert_rules: list[CelAlertRule] = Field(default_factory=list)
     underlying_alert_rules: list[CelAlertRule] = Field(default_factory=list)
 

@@ -62,7 +62,7 @@ session = Session(
 
 ### 2. Option Chain Loading (`src/dxlink_scanner/bootstrap.py`)
 
-**Purpose**: Fetch 0DTE option chain for each configured underlying, extract streamer symbols.
+**Purpose**: Fetch 0DTE option chain for each configured underlying, extract streamer symbols, and optionally filter by delta.
 
 ```python
 # Current: Uses SDK instrument functions
@@ -78,6 +78,13 @@ chains = get_future_option_chain(session, "ES")  # dict[date, list[FutureOption]
 today = datetime.now(UTC).date()
 option_symbols = [opt.streamer_symbol for opt in chains.get(today, [])]
 ```
+
+**Delta-Based Filtering** (when `delta_filter: true`):
+1. Subscribe to `TheoPrice` for all 0DTE symbols
+2. Buffer 2-5 seconds for delta values to populate
+3. Filter out symbols where `|delta| < min_delta`
+4. Unsubscribe filtered symbols from TheoPrice
+5. Return only qualifying symbols for Quote/TAS subscription
 
 **Outputs**:
 - `symbol → streamer_symbol` mapping for DXLink subscription
@@ -105,6 +112,7 @@ async def _produce_time_and_sales():
 |------------|---------|-------|
 | Quote | All option symbols + underlying futures | Best bid/ask; mid_price = (bid+ask)/2 |
 | TimeAndSale | All option symbols | Trade prints | last_trade_price, last_trade_size, trade_type |
+| TheoPrice | All 0DTE symbols (delta_filter=true) | Used for delta filtering; unsubscribed after filter |
 
 ### 4. Backpressure Queue (`asyncio.Queue`)
 
@@ -307,7 +315,7 @@ await consumer_task
 logger.info("Shutdown complete")
 ```
 
-**Trigger**: 17:00 ET (market close) via external scheduler (cron/systemd) sending SIGTERM.
+**Trigger**: 17:00 ET (market close) via external scheduler (cron/systemd) sending SIGTERM. For futures in the watchlist, the scanner continues overnight — no auto-shutdown until Friday 17:00 ET.
 
 ## Concurrency Model
 
