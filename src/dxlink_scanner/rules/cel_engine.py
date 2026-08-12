@@ -13,6 +13,7 @@ Example CEL rules:
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -21,7 +22,13 @@ from cel_expr_python import cel
 from dxlink_scanner.config import CelAlertRule, DetectionConfig, WatchlistConfig
 from dxlink_scanner.models import Alert, RollingStats, TimeAndSaleEvent, _to_epoch_ms
 from dxlink_scanner.snapshot_store import SnapshotStore
-from dxlink_scanner.stats import RollingStatsManager, RollingStatsV2
+from dxlink_scanner.stats import (
+    BayesianGammaPoisson,
+    HawkesProcess,
+    RollingStatsManager,
+    RollingStatsV2,
+    TimeOfDaySeasonality,
+)
 
 if TYPE_CHECKING:
     from dxlink_scanner.stats import RollingStatsManagerV2
@@ -75,6 +82,10 @@ class CELRuleEngine:
         underlying_symbol_map: dict[str, str] | None = None,
         snapshot_store: SnapshotStore | None = None,
         significance_thresholds: dict[str, dict[str, float]] | None = None,
+        # Statistical models for enhanced analysis
+        bayesian_models: dict[str, BayesianGammaPoisson] | None = None,
+        hawkes_models: dict[str, HawkesProcess] | None = None,
+        seasonality_models: dict[str, TimeOfDaySeasonality] | None = None,
     ) -> None:
         self._config = config
         self._stats = stats
@@ -83,6 +94,11 @@ class CELRuleEngine:
         self._underlying_symbol_map: dict[str, str] = underlying_symbol_map or {}
         self._snapshot_store = snapshot_store
         self._significance_thresholds: dict[str, dict[str, float]] = significance_thresholds or {}
+
+        # Statistical models
+        self._bayesian_models: dict[str, BayesianGammaPoisson] = bayesian_models or {}
+        self._hawkes_models: dict[str, HawkesProcess] = hawkes_models or {}
+        self._seasonality_models: dict[str, TimeOfDaySeasonality] = seasonality_models or {}
 
         # Per-symbol rules: symbol -> list of (rule, compiled_expr)
         self._per_symbol_rules: dict[str, list[CelAlertRule]] = per_symbol_rules or {}
@@ -240,6 +256,37 @@ class CELRuleEngine:
         if thresholds:
             config_data["p95_size"] = thresholds.get("p95_size", 0.0)
             config_data["p95_delta_weighted_size"] = thresholds.get("p95_delta_weighted_size", 0.0)
+
+        # Statistical model outputs
+        # Bayesian Gamma-Poisson
+        bayesian = self._bayesian_models.get(symbol) or self._bayesian_models.get("default")
+        if bayesian:
+            config_data["bayesian_mean"] = bayesian.posterior_mean()
+            config_data["bayesian_alpha"] = bayesian.alpha_post
+            config_data["bayesian_beta"] = bayesian.beta_post
+            ci = bayesian.credible_interval(0.95)
+            config_data["bayesian_ci_low"] = ci[0]
+            config_data["bayesian_ci_high"] = ci[1]
+
+        # Hawkes process
+        hawkes = self._hawkes_models.get(symbol) or self._hawkes_models.get("default")
+        if hawkes:
+            current_time = dt.datetime.now(dt.UTC).timestamp()
+            config_data["hawkes_intensity"] = hawkes.current_intensity(current_time)
+            config_data["hawkes_expected_60s"] = hawkes.expected_events(60.0, current_time)
+            config_data["hawkes_mu"] = hawkes.mu
+            config_data["hawkes_alpha"] = hawkes.alpha
+            config_data["hawkes_beta"] = hawkes.beta
+
+        # Time-of-day seasonality
+        seasonality = self._seasonality_models.get(symbol) or self._seasonality_models.get("default")
+        if seasonality and event.timestamp:
+            factor = seasonality.seasonality_factor(event.timestamp)
+            expected = seasonality.expected_volume(event.timestamp)
+            config_data["seasonality_factor"] = factor
+            config_data["seasonality_expected_volume"] = expected
+            # Seasonally adjusted size
+            config_data["seasonal_adj_size"] = int(event.size / factor) if factor > 0 else event.size
 
         # Determine if this is an option symbol or an underlying
         option_data: dict[str, Any] | None = None

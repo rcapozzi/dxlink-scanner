@@ -31,7 +31,12 @@ from dxlink_scanner.models import (
 from dxlink_scanner.rules import CELRuleEngine
 from dxlink_scanner.sinks import StdoutSink, WebhookSink
 from dxlink_scanner.snapshot_store import SnapshotStore
-from dxlink_scanner.stats import RollingStatsManager
+from dxlink_scanner.stats import (
+    BayesianGammaPoisson,
+    HawkesProcess,
+    RollingStatsManager,
+    TimeOfDaySeasonality,
+)
 
 SinkType = StdoutSink | WebhookSink
 RuleEngine = CELRuleEngine
@@ -100,6 +105,9 @@ async def _consume_consolidated(
     store: SnapshotStore,
     rules: RuleEngine,
     sinks: list[SinkType],
+    bayesian_models: dict[str, BayesianGammaPoisson],
+    hawkes_models: dict[str, HawkesProcess],
+    seasonality_models: dict[str, TimeOfDaySeasonality],
 ) -> None:
     """Consumer: process events from the unified queue."""
     while True:
@@ -111,10 +119,32 @@ async def _consume_consolidated(
             # Enrich TAS event with delta from the latest TheoPrice snapshot
             snap = store.get(event.symbol)
             delta = snap.delta if snap and snap.delta is not None else None
+
+            # Determine underlying for statistical models
+            underlying = snap.underlying_symbol if snap else event.symbol
+            if underlying not in bayesian_models:
+                underlying = "default"
+
+            # Update statistical models with this trade
+            trade_time = dt.datetime.now(dt.UTC).timestamp()
+            size = event.last_trade_size or 0
+
+            # Bayesian Gamma-Poisson (count of trades)
+            bayesian_models[underlying].update(1)  # count of 1 trade
+            # Also update for size (treating size as count in a separate model could work too)
+
+            # Hawkes process (event timing)
+            hawkes_models[underlying].add_event(trade_time)
+
+            # Time-of-day seasonality
+            if event.last_trade_time:
+                trade_dt = dt.datetime.fromtimestamp(event.last_trade_time / 1000, tz=dt.UTC)
+                seasonality_models[underlying].add_observation(trade_dt, float(size))
+
             tas_event = TimeAndSaleEvent(
                 symbol=event.symbol,
                 price=event.last_trade_price or Decimal("0"),
-                size=event.last_trade_size or 0,
+                size=size,
                 timestamp=(
                     dt.datetime.fromtimestamp(event.last_trade_time / 1000, tz=dt.UTC)
                     if event.last_trade_time
@@ -329,6 +359,21 @@ async def _run_scanner(
     # underlying_price via store.get(snap.underlying_symbol).mid_price
     for sym in underlying_symbols:
         store.bootstrap_snapshot(sym, underlying_map.get(sym, sym))
+
+    # Initialize statistical models for enhanced analysis
+    bayesian_models: dict[str, BayesianGammaPoisson] = {}
+    hawkes_models: dict[str, HawkesProcess] = {}
+    seasonality_models: dict[str, TimeOfDaySeasonality] = {}
+
+    # Create models for each ticker's underlying and a default
+    all_underlyings = list(underlying_symbols_set)
+    all_underlyings.append("default")
+
+    for underlying in all_underlyings:
+        bayesian_models[underlying] = BayesianGammaPoisson(alpha=1.0, beta=1.0)
+        hawkes_models[underlying] = HawkesProcess(mu=0.1, alpha=0.5, beta=1.0)
+        seasonality_models[underlying] = TimeOfDaySeasonality()
+
     # CEL-based rule engine: collect per-symbol and default rules from config
     per_symbol_rules: dict[str, list[CelAlertRule]] = {}
     for ticker in config.watchlist.tickers:
@@ -345,6 +390,9 @@ async def _run_scanner(
         underlying_symbol_map=underlying_map,
         snapshot_store=store,
         significance_thresholds=significance_thresholds,
+        bayesian_models=bayesian_models,
+        hawkes_models=hawkes_models,
+        seasonality_models=seasonality_models,
     )
     logger.info("Using CEL rule engine")
     sinks: list[SinkType] = []
@@ -387,7 +435,12 @@ async def _run_scanner(
             t = asyncio.create_task(_produce_events(streamer, event_type, normalize_fn, queue, counter))
             producers.append(t)
 
-        consumer = asyncio.create_task(_consume_consolidated(queue, store, rules, sinks))
+        consumer = asyncio.create_task(
+            _consume_consolidated(
+                queue, store, rules, sinks,
+                bayesian_models, hawkes_models, seasonality_models
+            )
+        )
 
         # Also start parquet flush loop if persistence enabled
         data_dir = Path(config.outputs.data_dir)
