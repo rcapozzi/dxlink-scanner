@@ -143,6 +143,22 @@ activation = {
     "config": {
         "abs_min_size": 10,
         "size_mult": 5.0,
+        "p95_size": 500.0,
+        "p95_delta_weighted_size": 250.0,
+        "bayesian_mean": 12.5,
+        "bayesian_alpha": 25.0,
+        "bayesian_beta": 2.0,
+        "bayesian_ci_low": 8.0,
+        "bayesian_ci_high": 18.0,
+        "bayesian_pooled_mean": 10.2,
+        "hawkes_intensity": 3.2,
+        "hawkes_expected_60s": 1.5,
+        "hawkes_mu": 0.5,
+        "hawkes_alpha": 0.8,
+        "hawkes_beta": 1.5,
+        "seasonality_factor": 1.35,
+        "seasonality_expected_volume": 18.0,
+        "seasonal_adj_size": 111,
     },
 }
 ```
@@ -190,6 +206,20 @@ activation = {
 | `config.size_mult` | `double` | Always | From detection config |
 | `config.p95_size` | `double` | If thresholds loaded | 95th percentile trade size for this symbol |
 | `config.p95_delta_weighted_size` | `double` | If thresholds loaded | 95th percentile delta-weighted size for this symbol |
+| `config.bayesian_mean` | `double` | If Bayesian model active | Posterior mean from Gamma-Poisson model |
+| `config.bayesian_alpha` | `double` | If Bayesian model active | Posterior alpha parameter |
+| `config.bayesian_beta` | `double` | If Bayesian model active | Posterior beta parameter |
+| `config.bayesian_ci_low` | `double` | If Bayesian model active | 2.5th percentile of credible interval |
+| `config.bayesian_ci_high` | `double` | If Bayesian model active | 97.5th percentile of credible interval |
+| `config.bayesian_pooled_mean` | `double` | If model active | Pooled estimate from cross-symbol Bayes |
+| `config.hawkes_intensity` | `double` | If Hawkes model active | Current conditional intensity λ(t) |
+| `config.hawkes_expected_60s` | `double` | If Hawkes model active | Expected events in next 60 seconds |
+| `config.hawkes_mu` | `double` | If Hawkes model active | Base intensity μ |
+| `config.hawkes_alpha` | `double` | If Hawkes model active | Excitation magnitude α |
+| `config.hawkes_beta` | `double` | If Hawkes model active | Decay rate β |
+| `config.seasonality_factor` | `double` | If seasonality model active | Intradiurnal volume factor (>1 = busy) |
+| `config.seasonality_expected_volume` | `double` | If seasonality model active | Expected volume for this time bin |
+| `config.seasonal_adj_size` | `int` | If seasonality model active | Raw size / seasonality_factor |
 
 ## Rule Configuration
 
@@ -332,6 +362,27 @@ trade.size >= 200 && trade.price > 1.0
 # P95 significance thresholds (loaded from significance_meta.json)
 trade.size >= config.p95_size
 trade.delta_weighted_size >= config.p95_delta_weighted_size
+```
+
+### Statistical Rules
+
+```cel
+# Bayesian anomaly detection (Gamma-Poisson posterior)
+trade.size >= config.bayesian_ci_high * 2
+
+# Hawkes clustering detection (self-exciting process)
+trade.delta_weighted_size >= config.p95_delta_weighted_size &&
+config.hawkes_intensity > config.hawkes_mu * 5
+
+# Seasonality-adjusted anomaly
+trade.delta_weighted_size >= config.p95_delta_weighted_size *
+  config.seasonality_factor
+
+# Composite statistical alert
+trade.is_option &&
+trade.delta_weighted_size >= config.p95_delta_weighted_size &&
+(config.hawkes_intensity > config.hawkes_mu * 3 ||
+ config.seasonal_adj_size >= config.p95_size * 2)
 ```
 
 ### Composite Rules
