@@ -10,9 +10,12 @@ import datetime as dt
 import math
 import statistics
 from dataclasses import dataclass, field
+from zoneinfo import ZoneInfo
 
 import numpy as np
 from scipy import stats as scipy_stats
+
+_ET_TZ = ZoneInfo("America/New_York")
 
 
 @dataclass(slots=True)
@@ -187,7 +190,9 @@ class TimeOfDaySeasonality:
     def add_observation(self, timestamp: dt.datetime, volume: float) -> None:
         """Add volume observation at timestamp."""
         # Convert to ET minutes from midnight
-        et = timestamp.astimezone(dt.timezone(dt.timedelta(hours=-4)))  # Approximate ET
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=dt.UTC)
+        et = timestamp.astimezone(_ET_TZ)
         minutes = et.hour * 60 + et.minute
 
         # Find bin
@@ -213,7 +218,9 @@ class TimeOfDaySeasonality:
 
     def expected_volume(self, timestamp: dt.datetime) -> float:
         """Expected volume at timestamp."""
-        et = timestamp.astimezone(dt.timezone(dt.timedelta(hours=-4)))
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=dt.UTC)
+        et = timestamp.astimezone(_ET_TZ)
         minutes = et.hour * 60 + et.minute
 
         bin_idx = 0
