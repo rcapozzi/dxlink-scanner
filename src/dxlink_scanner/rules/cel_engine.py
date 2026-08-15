@@ -24,6 +24,7 @@ from dxlink_scanner.models import Alert, RollingStats, TimeAndSaleEvent, _to_epo
 from dxlink_scanner.snapshot_store import SnapshotStore
 from dxlink_scanner.stats import (
     BayesianGammaPoisson,
+    CrossSymbolPool,
     HawkesProcess,
     RollingStatsManager,
     RollingStatsV2,
@@ -86,6 +87,7 @@ class CELRuleEngine:
         bayesian_models: dict[str, BayesianGammaPoisson] | None = None,
         hawkes_models: dict[str, HawkesProcess] | None = None,
         seasonality_models: dict[str, TimeOfDaySeasonality] | None = None,
+        cross_symbol_pool: CrossSymbolPool | None = None,
     ) -> None:
         self._config = config
         self._stats = stats
@@ -99,6 +101,7 @@ class CELRuleEngine:
         self._bayesian_models: dict[str, BayesianGammaPoisson] = bayesian_models or {}
         self._hawkes_models: dict[str, HawkesProcess] = hawkes_models or {}
         self._seasonality_models: dict[str, TimeOfDaySeasonality] = seasonality_models or {}
+        self._cross_symbol_pool: CrossSymbolPool | None = cross_symbol_pool
 
         # Per-symbol rules: symbol -> list of (rule, compiled_expr)
         self._per_symbol_rules: dict[str, list[CelAlertRule]] = per_symbol_rules or {}
@@ -301,6 +304,14 @@ class CELRuleEngine:
             underlying_data = {
                 "symbol": symbol,
             }
+
+        # Cross-symbol pooled estimates (for sparse data)
+        if self._cross_symbol_pool:
+            pooled_mean = self._cross_symbol_pool.get_pooled_estimate(symbol)
+            config_data["bayesian_pooled_mean"] = pooled_mean
+            ci_low, ci_high = self._cross_symbol_pool.credible_interval(symbol, 0.95)
+            config_data["bayesian_pooled_ci_low"] = ci_low
+            config_data["bayesian_pooled_ci_high"] = ci_high
 
         activation: dict[str, Any] = {
             "trade": trade_data,

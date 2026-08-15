@@ -10,6 +10,7 @@ import datetime as dt
 import math
 import statistics
 from dataclasses import dataclass, field
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -49,6 +50,30 @@ class BayesianGammaPoisson:
         self.sum_counts += count
         self.alpha_post = self.alpha + self.sum_counts
         self.beta_post = self.beta + self.n_observations * exposure
+
+    def to_dict(self) -> dict[str, float | int]:
+        """Serialize model state to a JSON-compatible dict."""
+        return {
+            "alpha": self.alpha,
+            "beta": self.beta,
+            "alpha_post": self.alpha_post,
+            "beta_post": self.beta_post,
+            "n_observations": self.n_observations,
+            "sum_counts": self.sum_counts,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> BayesianGammaPoisson:
+        """Restore model state from a dict produced by ``to_dict``."""
+        obj = cls(
+            alpha=float(data["alpha"]),
+            beta=float(data["beta"]),
+        )
+        obj.alpha_post = float(data["alpha_post"])
+        obj.beta_post = float(data["beta_post"])
+        obj.n_observations = int(data["n_observations"])
+        obj.sum_counts = int(data["sum_counts"])
+        return obj
 
     def posterior_mean(self) -> float:
         """Expected rate (trades per interval)."""
@@ -129,6 +154,28 @@ class HawkesProcess:
             if ti < t:
                 intensity += self.alpha * math.exp(-self.beta * (t - ti))
         self._current_intensity = intensity
+
+    def to_dict(self) -> dict[str, float | list[float]]:
+        """Serialize model state to a JSON-compatible dict."""
+        return {
+            "mu": self.mu,
+            "alpha": self.alpha,
+            "beta": self.beta,
+            "event_times": list(self._event_times),
+            "current_intensity": self._current_intensity,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> HawkesProcess:
+        """Restore model state from a dict produced by ``to_dict``."""
+        obj = cls(
+            mu=float(data["mu"]),
+            alpha=float(data["alpha"]),
+            beta=float(data["beta"]),
+        )
+        obj._event_times = list(data["event_times"])
+        obj._current_intensity = float(data["current_intensity"])
+        return obj
 
     def current_intensity(self, timestamp: float | None = None) -> float:
         """Get current intensity at timestamp (or now)."""
@@ -244,6 +291,24 @@ class TimeOfDaySeasonality:
         factor = self.seasonality_factor(timestamp)
         return observed / factor if factor > 0 else observed
 
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize model state to a JSON-compatible dict."""
+        return {
+            "bin_edges": list(self.bin_edges),
+            "bin_counts": dict(self._bin_counts),
+            "bin_means": dict(self._bin_means),
+            "global_mean": self._global_mean,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> TimeOfDaySeasonality:
+        """Restore model state from a dict produced by ``to_dict``."""
+        obj = cls(bin_edges=list(data.get("bin_edges", [])))
+        obj._bin_counts = {int(k): list(v) for k, v in data.get("bin_counts", {}).items()}  # type: ignore[arg-type]
+        obj._bin_means = {int(k): float(v) for k, v in data.get("bin_means", {}).items()}  # type: ignore[arg-type]
+        obj._global_mean = float(data.get("global_mean", 1.0))
+        return obj
+
 
 @dataclass(slots=True)
 class CrossSymbolPool:
@@ -289,6 +354,28 @@ class CrossSymbolPool:
 
         post = self.symbol_posteriors[symbol]
         return post.credible_interval(confidence)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize model state to a JSON-compatible dict."""
+        return {
+            "global_alpha": self.global_alpha,
+            "global_beta": self.global_beta,
+            "symbol_posteriors": {
+                sym: post.to_dict() for sym, post in self.symbol_posteriors.items()
+            },
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CrossSymbolPool:
+        """Restore model state from a dict produced by ``to_dict``."""
+        obj = cls(
+            global_alpha=float(data.get("global_alpha", 1.0)),
+            global_beta=float(data.get("global_beta", 1.0)),
+        )
+        posteriors = data.get("symbol_posteriors", {})
+        for sym, post_data in posteriors.items():
+            obj.symbol_posteriors[str(sym)] = BayesianGammaPoisson.from_dict(post_data)
+        return obj
 
 
 @dataclass(slots=True)
@@ -355,6 +442,22 @@ class VolumeAtPrice:
 
         total = buy_vol + sell_vol
         return (buy_vol - sell_vol) / total if total > 0 else 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize model state to a JSON-compatible dict."""
+        return {
+            "tick_size": self.tick_size,
+            "price_volume": dict(self._price_volume),
+            "total_volume": self._total_volume,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> VolumeAtPrice:
+        """Restore model state from a dict produced by ``to_dict``."""
+        obj = cls(tick_size=float(data.get("tick_size", 0.01)))
+        obj._price_volume = {int(k): float(v) for k, v in data.get("price_volume", {}).items()}
+        obj._total_volume = float(data.get("total_volume", 0.0))
+        return obj
 
 
 @dataclass(slots=True)
@@ -427,6 +530,30 @@ class RegimeDetector:
             prob = 1.0 - vol / self.vol_low if self.vol_low > 0 else 1.0
 
         return RegimeState(regime=regime, probability=prob, volatility=vol, volume_rate=vol_rate)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize model state to a JSON-compatible dict."""
+        return {
+            "vol_low": self.vol_low,
+            "vol_high": self.vol_high,
+            "vol_crash": self.vol_crash,
+            "vol_window": self.vol_window,
+            "returns": list(self._returns),
+            "volumes": list(self._volumes),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RegimeDetector:
+        """Restore model state from a dict produced by ``to_dict``."""
+        obj = cls(
+            vol_low=float(data["vol_low"]),
+            vol_high=float(data["vol_high"]),
+            vol_crash=float(data["vol_crash"]),
+            vol_window=int(data["vol_window"]),
+        )
+        obj._returns = list(data["returns"])
+        obj._volumes = list(data["volumes"])
+        return obj
 
 
 def false_discovery_rate_control(p_values: list[float], alpha: float = 0.05) -> list[bool]:

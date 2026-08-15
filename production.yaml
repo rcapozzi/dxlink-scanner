@@ -69,6 +69,7 @@ outputs:
   data_dir: "data/events"
   persist_events: true
   significance_thresholds_file: "data/events/significance_thresholds.json"
+  models_state_file: "data/events/models_meta.json"
 
 stream:
   backpressure_queue_size: 500

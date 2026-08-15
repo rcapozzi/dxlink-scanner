@@ -124,6 +124,10 @@ class OutputsConfig(BaseModel):
         default=None,
         description="Path to significance_thresholds.json (from compact_parquet.py).",
     )
+    models_state_file: str | None = Field(
+        default=None,
+        description="Path to models_meta.json for model state persistence (read/written by ModelStore).",
+    )
 
 
 class LoggingConfig(BaseModel):

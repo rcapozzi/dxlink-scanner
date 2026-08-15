@@ -33,9 +33,13 @@ from dxlink_scanner.sinks import StdoutSink, WebhookSink
 from dxlink_scanner.snapshot_store import SnapshotStore
 from dxlink_scanner.stats import (
     BayesianGammaPoisson,
+    CrossSymbolPool,
     HawkesProcess,
+    ModelSet,
+    ModelStore,
     RollingStatsManager,
     TimeOfDaySeasonality,
+    prior_elicitation,
 )
 
 SinkType = StdoutSink | WebhookSink
@@ -108,11 +112,21 @@ async def _consume_consolidated(
     bayesian_models: dict[str, BayesianGammaPoisson],
     hawkes_models: dict[str, HawkesProcess],
     seasonality_models: dict[str, TimeOfDaySeasonality],
+    cross_symbol_pool: CrossSymbolPool | None = None,
+    model_store: ModelStore | None = None,
+    model_sets: dict[str, ModelSet] | None = None,
 ) -> None:
     """Consumer: process events from the unified queue."""
     while True:
         event = await queue.get()
         store.ingest(event)
+
+        # Periodic checkpoint if model store is configured
+        if model_store and model_sets:
+            model_store.maybe_checkpoint(
+                _compile_model_sets(model_sets, bayesian_models, hawkes_models,
+                                    seasonality_models, cross_symbol_pool)
+            )
 
         # Only TAS events go to rule engine + sinks
         if event.source_type == "TIME_AND_SALE":
@@ -141,6 +155,10 @@ async def _consume_consolidated(
                 trade_dt = dt.datetime.fromtimestamp(event.last_trade_time / 1000, tz=dt.UTC)
                 seasonality_models[underlying].add_observation(trade_dt, float(size))
 
+            # Cross-symbol pooling (share information across underlyings)
+            if cross_symbol_pool is not None:
+                cross_symbol_pool.update_symbol(underlying, 1, exposure=1.0)
+
             tas_event = TimeAndSaleEvent(
                 symbol=event.symbol,
                 price=event.last_trade_price or Decimal("0"),
@@ -163,13 +181,29 @@ async def _consume_consolidated(
         queue.task_done()
 
 
+def _compile_model_sets(
+    model_sets: dict[str, ModelSet],
+    bayesian_models: dict[str, BayesianGammaPoisson],
+    hawkes_models: dict[str, HawkesProcess],
+    seasonality_models: dict[str, TimeOfDaySeasonality],
+    cross_symbol_pool: CrossSymbolPool | None = None,
+) -> dict[str, ModelSet]:
+    """Sync the individual model dicts into ModelSet objects for checkpointing."""
+    for symbol, model_set in model_sets.items():
+        model_set.bayesian = bayesian_models.get(symbol, BayesianGammaPoisson())
+        model_set.hawkes = hawkes_models.get(symbol, HawkesProcess())
+        model_set.seasonality = seasonality_models.get(symbol, TimeOfDaySeasonality())
+        if cross_symbol_pool:
+            model_set.pool = cross_symbol_pool
+    return model_sets
+
+
 def _get_normalize_fn(event_type: type) -> Callable[..., ConsolidatedEvent]:
     """Return the appropriate normalize function for a DXLink event type."""
     if event_type is Quote:
         return normalize_quote
     if event_type is DXTimeAndSale:
         return normalize_timeandsale
-    if event_type is DXTheoPrice:
         return normalize_theoprice
     raise ValueError(f"Unknown event type: {event_type}")
 
@@ -361,18 +395,59 @@ async def _run_scanner(
         store.bootstrap_snapshot(sym, underlying_map.get(sym, sym))
 
     # Initialize statistical models for enhanced analysis
+    data_dir = Path(config.outputs.data_dir)
+    models_path = (
+        Path(config.outputs.models_state_file)
+        if config.outputs.models_state_file
+        else data_dir / "models_meta.json"
+    )
+    model_store = ModelStore(data_dir=data_dir, checkpoint_interval_sec=600.0)
+    model_store._models_path = models_path
+
+    # Prior elicitation: try to load hyperpriors from parquet history
+    hyperpriors: dict[str, float] | None = None
+    if config.outputs.persist_events and data_dir.exists():
+        try:
+            hyperpriors = prior_elicitation(data_dir, lookback_days=30)
+        except Exception as e:
+            logger.warning("Prior elicitation failed: %s; using defaults", e)
+
+    cross_symbol_pool = CrossSymbolPool(
+        global_alpha=hyperpriors.get("alpha", 1.0) if hyperpriors else 1.0,
+        global_beta=hyperpriors.get("beta", 1.0) if hyperpriors else 1.0,
+    )
+
     bayesian_models: dict[str, BayesianGammaPoisson] = {}
     hawkes_models: dict[str, HawkesProcess] = {}
     seasonality_models: dict[str, TimeOfDaySeasonality] = {}
+    model_sets: dict[str, ModelSet] = {}
 
     # Create models for each ticker's underlying and a default
     all_underlyings = list(underlying_symbols_set)
     all_underlyings.append("default")
 
+    # Warm up: load saved model state or initialize from hyperpriors
+    warm_models = model_store.warm_up(all_underlyings, hyperpriors)
+
     for underlying in all_underlyings:
-        bayesian_models[underlying] = BayesianGammaPoisson(alpha=1.0, beta=1.0)
-        hawkes_models[underlying] = HawkesProcess(mu=0.1, alpha=0.5, beta=1.0)
-        seasonality_models[underlying] = TimeOfDaySeasonality()
+        if underlying in warm_models:
+            ms = warm_models[underlying]
+            bayesian_models[underlying] = ms.bayesian
+            hawkes_models[underlying] = ms.hawkes
+            seasonality_models[underlying] = ms.seasonality
+            model_sets[underlying] = ms
+        else:
+            alpha = hyperpriors.get("alpha", 1.0) if hyperpriors else 1.0
+            beta = hyperpriors.get("beta", 1.0) if hyperpriors else 1.0
+            bayesian_models[underlying] = BayesianGammaPoisson(alpha=alpha, beta=beta)
+            hawkes_models[underlying] = HawkesProcess(mu=0.1, alpha=0.5, beta=1.0)
+            seasonality_models[underlying] = TimeOfDaySeasonality()
+            model_sets[underlying] = ModelSet(
+                bayesian=bayesian_models[underlying],
+                hawkes=hawkes_models[underlying],
+                seasonality=seasonality_models[underlying],
+                pool=cross_symbol_pool,
+            )
 
     # CEL-based rule engine: collect per-symbol and default rules from config
     per_symbol_rules: dict[str, list[CelAlertRule]] = {}
@@ -393,6 +468,7 @@ async def _run_scanner(
         bayesian_models=bayesian_models,
         hawkes_models=hawkes_models,
         seasonality_models=seasonality_models,
+        cross_symbol_pool=cross_symbol_pool,
     )
     logger.info("Using CEL rule engine")
     sinks: list[SinkType] = []
@@ -438,7 +514,10 @@ async def _run_scanner(
         consumer = asyncio.create_task(
             _consume_consolidated(
                 queue, store, rules, sinks,
-                bayesian_models, hawkes_models, seasonality_models
+                bayesian_models, hawkes_models, seasonality_models,
+                cross_symbol_pool=cross_symbol_pool,
+                model_store=model_store,
+                model_sets=model_sets,
             )
         )
 
@@ -531,6 +610,13 @@ async def _run_scanner(
         # Flush remaining events to parquet
         if store.persist:
             await store.flush_remaining(data_dir)
+
+        # Save model state for next warm start
+        checkpoint_models = _compile_model_sets(
+            model_sets, bayesian_models, hawkes_models,
+            seasonality_models, cross_symbol_pool,
+        )
+        model_store.save(checkpoint_models)
 
         logger.info("Scanner shutdown complete.")
 
