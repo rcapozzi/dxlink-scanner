@@ -35,6 +35,10 @@ from dxlink_scanner.stats.statistical_analysis import (
     bayesian_anomaly_score,
     false_discovery_rate_control,
 )
+from dxlink_scanner.stats.vectorized import (
+    VectorizedBayesianUpdater,
+    VectorizedHawkesUpdater,
+)
 
 __all__ = [
     "RollingStatsManager",
@@ -67,4 +71,6 @@ __all__ = [
     "CrossAssetFlowState",
     "CrossAssetHawkes",
     "compute_lead_lag",
+    "VectorizedBayesianUpdater",
+    "VectorizedHawkesUpdater",
 ]
