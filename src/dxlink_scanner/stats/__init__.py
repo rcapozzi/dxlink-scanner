@@ -1,6 +1,16 @@
 """Rolling statistics management package."""
 
 from dxlink_scanner.models import RollingStats
+from dxlink_scanner.stats.microstructure import (
+    CrossAssetFlowState,
+    CrossAssetHawkes,
+    FlowMetrics,
+    LiquidityMetrics,
+    OrderFlowClassifier,
+    TradeClassification,
+    VPINCalculator,
+    compute_lead_lag,
+)
 from dxlink_scanner.stats.model_store import (
     CalibrationDiagnostics,
     ModelSet,
@@ -49,4 +59,12 @@ __all__ = [
     "online_fdr_threshold",
     "hierarchical_fdr",
     "VolatilityTargeter",
+    "OrderFlowClassifier",
+    "TradeClassification",
+    "VPINCalculator",
+    "LiquidityMetrics",
+    "FlowMetrics",
+    "CrossAssetFlowState",
+    "CrossAssetHawkes",
+    "compute_lead_lag",
 ]

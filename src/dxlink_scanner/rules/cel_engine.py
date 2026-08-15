@@ -24,13 +24,16 @@ from dxlink_scanner.models import Alert, RollingStats, TimeAndSaleEvent, _to_epo
 from dxlink_scanner.snapshot_store import SnapshotStore
 from dxlink_scanner.stats import (
     BayesianGammaPoisson,
+    CrossAssetHawkes,
     CrossSymbolPool,
+    FlowMetrics,
     HawkesProcess,
     RegimeDetector,
     RollingStatsManager,
     RollingStatsV2,
     TimeOfDaySeasonality,
     VolatilityTargeter,
+    VolumeAtPrice,
     bayesian_decision,
     online_fdr_threshold,
 )
@@ -93,6 +96,9 @@ class CELRuleEngine:
         seasonality_models: dict[str, TimeOfDaySeasonality] | None = None,
         cross_symbol_pool: CrossSymbolPool | None = None,
         regime_detectors: dict[str, RegimeDetector] | None = None,
+        volume_at_price_models: dict[str, VolumeAtPrice] | None = None,
+        flow_metrics: dict[str, FlowMetrics] | None = None,
+        cross_asset_hawkes: CrossAssetHawkes | None = None,
     ) -> None:
         self._config = config
         self._stats = stats
@@ -109,6 +115,9 @@ class CELRuleEngine:
         self._cross_symbol_pool: CrossSymbolPool | None = cross_symbol_pool
         self._regime_detectors: dict[str, RegimeDetector] = regime_detectors or {}
         self._last_config: dict[str, Any] = {}
+        self._vap_models: dict[str, VolumeAtPrice] = volume_at_price_models or {}
+        self._flow_metrics: dict[str, FlowMetrics] = flow_metrics or {}
+        self._cross_asset_hawkes: CrossAssetHawkes | None = cross_asset_hawkes
 
         # Per-symbol rules: symbol -> list of (rule, compiled_expr)
         self._per_symbol_rules: dict[str, list[CelAlertRule]] = per_symbol_rules or {}
@@ -325,6 +334,8 @@ class CELRuleEngine:
         config_data: dict[str, Any] = {
             "abs_min_size": self._config.abs_min_size,
             "size_mult": self._config.size_mult,
+            "vpin_threshold": self._config.vpin_threshold,
+            "vol_target": self._config.vol_target,
         }
 
         # Significance thresholds from daily P95 analysis
@@ -424,6 +435,47 @@ class CELRuleEngine:
             ci_low, ci_high = self._cross_symbol_pool.credible_interval(symbol, 0.95)
             config_data["bayesian_pooled_ci_low"] = ci_low
             config_data["bayesian_pooled_ci_high"] = ci_high
+
+        # Volume at Price (VAP) profile
+        vap = self._vap_models.get(symbol) or self._vap_models.get("default")
+        if vap:
+            config_data["vap_poc"] = vap.poc()
+            va_low, va_high = vap.value_area(0.70)
+            config_data["vap_val_area_low"] = va_low
+            config_data["vap_val_area_high"] = va_high
+            config_data["vap_imbalance"] = vap.imbalance()
+
+        # Flow metrics (VPIN, trade classification, liquidity)
+        flow = self._flow_metrics.get(symbol) or self._flow_metrics.get("default")
+        if flow:
+            config_data["vpin"] = flow.vpin.vpin
+            config_data["vpin_std"] = flow.vpin.vpin_std
+            config_data["spread_p50"] = flow.liquidity.spread_p50
+            config_data["spread_p95"] = flow.liquidity.spread_p95
+            config_data["depth_at_poc_median"] = flow.liquidity.depth_at_poc_median
+            # Classify the trade direction
+            snap = self._snapshot_store.get(event.symbol) if self._snapshot_store else None
+            bid_price = snap.bid_price if snap else None
+            ask_price = snap.ask_price if snap else None
+            mid_price = snap.mid_price if snap else None
+            prev_mid = flow.prev_mid_price
+            tick_dir = None
+            if prev_mid is not None:
+                tick_dir = 1 if float(event.price) > prev_mid else (-1 if float(event.price) < prev_mid else 0)
+            classification = flow.trade_classifier.classify(
+                float(event.price) if event.price else 0.0,
+                float(bid_price) if bid_price else None,
+                float(ask_price) if ask_price else None,
+                float(mid_price) if mid_price else prev_mid,
+                tick_dir,
+            )
+            config_data["trade_side"] = classification.side
+            config_data["trade_classification_confidence"] = classification.confidence
+
+        # Cross-asset Hawkes (systemic flow)
+        if self._cross_asset_hawkes:
+            config_data["systemic_score"] = self._cross_asset_hawkes.systemic_anomaly_score()
+            config_data["cross_asset_vpin"] = flow.vpin.vpin if flow else 0.5
 
         activation: dict[str, Any] = {
             "trade": trade_data,
@@ -536,6 +588,8 @@ class CELRuleEngine:
                             decision_threshold=self._last_config.get("bayesian_decision"),
                             alert_utility=self._last_config.get("bayes_factor"),
                             is_regime_shift=False,  # Set True when regime transition rules match
+                            vpin=self._last_config.get("vpin"),
+                            trade_side=self._last_config.get("trade_side"),
                         )
                 except Exception as e:
                     logger.warning(

@@ -77,6 +77,22 @@ class ConsolidatedSnapshot:
     spread: Decimal | None = None
     spread_bps: float | None = None
     trade_vs_mid: Decimal | None = None
+
+    # Microstructure: VAP profile fields (from FlowMetrics/VolumeAtPrice)
+    vap_poc: Decimal | None = None
+    vap_val_area_low: Decimal | None = None
+    vap_val_area_high: Decimal | None = None
+    vap_imbalance: float | None = None
+
+    # Microstructure: liquidity metrics (from LiquidityMetrics)
+    spread_p50: float | None = None
+    spread_p95: float | None = None
+    depth_at_poc_median: float | None = None
+
+    # Microstructure: toxicity metrics (from VPINCalculator)
+    vpin: float | None = None
+    trade_side: str | None = None  # "buy", "sell", "unknown"
+
     evict_at: int | None = None
 
 
@@ -272,6 +288,8 @@ class Alert:
     p_value: float | None = None
     alert_utility: float | None = None
     decision_threshold: float | None = None
+    vpin: float | None = None
+    trade_side: str | None = None
 
 
 @dataclass(slots=True)

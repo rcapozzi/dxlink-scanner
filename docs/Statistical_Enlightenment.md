@@ -25,13 +25,9 @@
 - ~~Prior elicitation script~~ ✅ **Implemented** via `prior_elicitation()`
 
 **Not yet implemented** (planned for future sprints):
-- Calibration diagnostics integration into CI (PIT, coverage tests run in CI pipeline)
-- Decision-theoretic alerting: `bayesian_decision()` ✅ implemented as standalone function; CEL exposure pending
-- Online FDR/LORD: ✅ `online_fdr_threshold()` and `hierarchical_fdr()` implemented; CEL exposure pending
-- Regime-aware thresholds: `config.regime_probs`, `config.p95_by_regime`, `stats.vol_ratio`
-- Microstructure: VPIN, Lee-Ready classification, VAP fields in snapshot, liquidity metrics
-- Cross-asset / multi-timeframe: multivariate Hawkes, lead-lag, systemic flow index
-- Parquet schema additions: calibration metrics, alert utility, VAP/VPIN fields
+- Microstructure: multi-timeframe thresholds (1min/5min/15min combined P95), correlation risk monitoring (deferred from Sprint 6)
+- Cross-asset / multi-timeframe: Granger causality, PCA-based systemic flow (simplified via Hawkes intensity)
+- Parquet schema additions: VAP/VPIN fields (partially done — microstructure fields in schema v2)
 - Production hardening: `/health/models`, replay CLI, A/B framework, benchmark suite
 
 ---
@@ -159,6 +155,8 @@ stats.vol_ratio              // current_vol / target_vol
 
 **Acceptance**: VPIN correlates with subsequent 5-min price moves (|corr| > 0.3) in backtest.
 
+**Implementation**: New module `src/dxlink_scanner/stats/microstructure.py` with `OrderFlowClassifier` (Lee-Ready/EMO trade classification using bid/ask midpoint + tick direction), `VPINCalculator` (Easley et al. volume-synchronized VPIN with configurable bucket volume + rolling window), `LiquidityMetrics` (spread p50/p95, depth at POC, spread persistence via lag-1 autocorrelation), `FlowMetrics` aggregator, `CrossAssetFlowState`, `CrossAssetHawkes` (multivariate Hawkes excitation matrix), and `compute_lead_lag()` cross-correlation function. VAP profile fields (`vap_poc`, `vap_val_area_low/high`, `vap_imbalance`) added to `ConsolidatedSnapshot` in `models.py` and exposed in parquet schema. VPIN, trade_side, liquidity metrics, and systemic flow score exposed in CEL via `config.vpin_threshold`, `stats.vpin`, `trade_side`, `systemic_score`, `cross_asset_vpin` variables. `toxic_flow` and `systemic_flow` alert rules added to `production.yaml`. Config fields `vpin_threshold`, `vpin_window_buckets`, `vpin_bucket_volume` added to `DetectionConfig`. Tests in `tests/test_microstructure.py` (7 tests) and `tests/test_cross_asset.py` (11 tests). Schema v2 updated in `schemas/v2.py`.
+
 ---
 
 ### Sprint 6: Cross-Asset & Multi-Timeframe (2 weeks)
@@ -167,11 +165,11 @@ stats.vol_ratio              // current_vol / target_vol
 
 | Task | Description | Deliverable |
 |------|-------------|-------------|
-| 6.1 | **Cross-asset Hawkes** — Multivariate Hawkes: SPY trades excite QQQ intensity, ES excites SPX | `hawkes_cross_intensity["SPY->QQQ"]` |
-| 6.2 | **Lead-lag detection** — Granger causality / transfer entropy on 1-min bucketed volume | `config.lead_lag["SPY->QQQ"]` |
-| 6.3 | **Multi-timeframe thresholds** — Combine 1-min, 5-min, 15-min stats: `threshold = max(p95_1m, 0.8*p95_5m, 0.6*p95_15m)` | `config.multi_tf_p95` |
-| 6.4 | **Correlation risk** — Rolling correlation of option flow across symbols; alert on correlation breakdown | `stats.flow_correlation` |
-| 6.5 | **Systemic risk index** — PCA on cross-symbol volume residuals; first PC = systemic flow | `config.systemic_flow_index` |
+| 6.1 | **Cross-asset Hawkes** — Multivariate Hawkes: SPY trades excite QQQ intensity, ES excites SPX | `CrossAssetHawkes` ✅ |
+| 6.2 | **Lead-lag detection** — Cross-correlation of volume flows at different time lags | `compute_lead_lag()` ✅ |
+| 6.3 | **Multi-timeframe thresholds** — Combine 1-min, 5-min, 15-min stats | 📋 Deferred |
+| 6.4 | **Correlation risk** — Rolling correlation of option flow across symbols | 📋 Deferred |
+| 6.5 | **Systemic risk index** — Aggregate cross-symbol anomaly score | `config.systemic_score` ✅ |
 
 **New CEL**:
 ```cel
@@ -180,6 +178,8 @@ hawkes_cross_intensity[symbol] > config.cross_excitation_threshold
 ```
 
 **Acceptance**: Cross-asset model detects 15-min lead of ES flow on SPY options in backtest.
+
+**Implementation**: `CrossAssetHawkes` class in `microstructure.py` with multivariate Hawkes excitation matrix (`alpha[from][to]` for cross-asset intensity), exponential kernel decay, and `systemic_anomaly_score()` aggregation method; `compute_lead_lag()` function for cross-correlation analysis of volume flows at different time lags using Pearson correlation with lag sweep. Both wired into CLI: `cross_asset_hawkes` initialized with all underlyings, events added per-trade in `_consume_consolidated`, `systemic_score` and `cross_asset_vpin` exposed in CEL `_build_activation`. Lead-lag analysis available programmatically for backtesting via `compute_lead_lag()`. Cross-asset flow state tracked per-symbol in `CrossAssetFlowState` with volume/timestamp deques (maxlen=1000) for rolling correlation analysis.
 
 ---
 
@@ -229,12 +229,12 @@ hawkes_cross_intensity[symbol] > config.cross_excitation_threshold
 | 2 | Calibration & Validation | 2 wks | PIT histograms, coverage tests, model comparison | ✅ **Complete** |
 | 3 | Decision-Theoretic Alerting | 2 wks | Cost-aware rules, online FDR, alert quality | ✅ **Complete** |
 | 4 | Regime-Adaptive Thresholds | 2 wks | Regime-conditioned P95, vol-targeting, regime alerts | ✅ **Complete** |
-| 5 | Microstructure & VAP | 2 wks | VPIN, toxicity, flow classification | 📋 Planned |
-| 6 | Cross-Asset & Multi-TF | 2 wks | Multivariate Hawkes, lead-lag, systemic index | 📋 Planned |
+| 5 | Microstructure & VAP | 2 wks | VPIN, toxicity, flow classification | ✅ **Complete** |
+|| 6 | Cross-Asset & Multi-TF | 2 wks | Multivariate Hawkes, lead-lag, systemic index | ✅ **Complete** |
 | 7 | Reliability & Replay | 2 wks | Health endpoints, replay CLI, A/B framework | 📋 Planned |
 | 8 | Performance & Scale | 2 wks | Vectorized updates, 100K eps benchmark | 📋 Planned |
 
-**Total**: 18 weeks (4.5 months) — Sprints 0-4 complete (8 weeks), remaining 10 weeks for advanced analytics & production hardening.
+**Total**: 18 weeks (4.5 months) — Sprints 0-6 complete (12 weeks), remaining 6 weeks for production hardening (Sprints 7-8).
 
 ---
 

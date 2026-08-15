@@ -33,13 +33,16 @@ from dxlink_scanner.sinks import StdoutSink, WebhookSink
 from dxlink_scanner.snapshot_store import SnapshotStore
 from dxlink_scanner.stats import (
     BayesianGammaPoisson,
+    CrossAssetHawkes,
     CrossSymbolPool,
+    FlowMetrics,
     HawkesProcess,
     ModelSet,
     ModelStore,
     RegimeDetector,
     RollingStatsManager,
     TimeOfDaySeasonality,
+    VolumeAtPrice,
     prior_elicitation,
 )
 
@@ -115,6 +118,9 @@ async def _consume_consolidated(
     seasonality_models: dict[str, TimeOfDaySeasonality],
     cross_symbol_pool: CrossSymbolPool | None = None,
     regime_detectors: dict[str, RegimeDetector] | None = None,
+    volume_at_price_models: dict[str, VolumeAtPrice] | None = None,
+    flow_metrics: dict[str, FlowMetrics] | None = None,
+    cross_asset_hawkes: CrossAssetHawkes | None = None,
     model_store: ModelStore | None = None,
     model_sets: dict[str, ModelSet] | None = None,
 ) -> None:
@@ -161,6 +167,22 @@ async def _consume_consolidated(
             # Cross-symbol pooling (share information across underlyings)
             if cross_symbol_pool is not None:
                 cross_symbol_pool.update_symbol(underlying, 1, exposure=1.0)
+
+            # Volume at Price (VAP) - update with trade price and size
+            vap = volume_at_price_models.get(underlying) if volume_at_price_models else None
+            if vap:
+                trade_price_float = float(event.last_trade_price) if event.last_trade_price else 0.0
+                vap.add_trade(trade_price_float, size)
+
+            # Flow metrics - update VPIN, liquidity, trade classification
+            flow = flow_metrics.get(underlying) if flow_metrics else None
+            if flow and snap:
+                flow.update(snap, float(event.last_trade_price) if event.last_trade_price else 0.0, size)
+
+            # Cross-asset Hawkes - update systemic intensity
+            if cross_asset_hawkes:
+                trade_time = event.last_trade_time / 1000.0 if event.last_trade_time else 0.0
+                cross_asset_hawkes.add_event(underlying, trade_time)
 
             tas_event = TimeAndSaleEvent(
                 symbol=event.symbol,
@@ -427,7 +449,12 @@ async def _run_scanner(
     hawkes_models: dict[str, HawkesProcess] = {}
     seasonality_models: dict[str, TimeOfDaySeasonality] = {}
     regime_detectors: dict[str, RegimeDetector] = {}
+    vap_models: dict[str, VolumeAtPrice] = {}
+    flow_metrics: dict[str, FlowMetrics] = {}
     model_sets: dict[str, ModelSet] = {}
+
+    # Initialize VAP models with tick size from config
+    tick_size = getattr(config.stream, "tick_size", None) or 0.01  # type: ignore[attr-defined]
 
     # Create models for each ticker's underlying and a default
     all_underlyings = list(underlying_symbols_set)
@@ -437,6 +464,10 @@ async def _run_scanner(
     warm_models = model_store.warm_up(all_underlyings, hyperpriors)
 
     for underlying in all_underlyings:
+        # Initialize VAP and flow metrics for each symbol
+        vap_models[underlying] = VolumeAtPrice(tick_size=tick_size)
+        flow_metrics[underlying] = FlowMetrics(symbol=underlying)
+
         if underlying in warm_models:
             ms = warm_models[underlying]
             bayesian_models[underlying] = ms.bayesian
@@ -466,6 +497,13 @@ async def _run_scanner(
                 pool=cross_symbol_pool,
             )
 
+    # Cross-asset Hawkes for systemic flow detection
+    cross_asset_hawkes = CrossAssetHawkes(
+        symbols=all_underlyings,
+        mu=0.1,
+        decay=1.0,
+    )
+
     # CEL-based rule engine: collect per-symbol and default rules from config
     per_symbol_rules: dict[str, list[CelAlertRule]] = {}
     for ticker in config.watchlist.tickers:
@@ -487,6 +525,9 @@ async def _run_scanner(
         seasonality_models=seasonality_models,
         cross_symbol_pool=cross_symbol_pool,
         regime_detectors=regime_detectors,
+        volume_at_price_models=vap_models,
+        flow_metrics=flow_metrics,
+        cross_asset_hawkes=cross_asset_hawkes,
     )
     logger.info("Using CEL rule engine")
     sinks: list[SinkType] = []
@@ -535,6 +576,9 @@ async def _run_scanner(
                 bayesian_models, hawkes_models, seasonality_models,
                 cross_symbol_pool=cross_symbol_pool,
                 regime_detectors=regime_detectors,
+                volume_at_price_models=vap_models,
+                flow_metrics=flow_metrics,
+                cross_asset_hawkes=cross_asset_hawkes,
                 model_store=model_store,
                 model_sets=model_sets,
             )

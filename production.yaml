@@ -18,6 +18,12 @@ watchlist:
     - name: "anomaly_detector"
       expression: "trade.size > 10 && trade.size > stats.median * 2.0"
       severity: "high"
+    - name: "toxic_flow"
+      expression: "stats.vpin > config.vpin_threshold && trade.delta_weighted_size > config.p95_delta_weighted_size"
+      severity: "high"
+    - name: "systemic_flow"
+      expression: "config.systemic_score > 2.0"
+      severity: "critical"
   tickers:
     - symbol: "SPY"
       option_type: "equity"
@@ -69,6 +75,9 @@ detection:
   vol_high: 0.03
   vol_crash: 0.05
   vol_target: 0.02
+  vpin_threshold: 0.6
+  vpin_window_buckets: 265
+  vpin_bucket_volume: 1000
   p95_by_regime:
     low_vol:
       p95_size: 80

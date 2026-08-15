@@ -181,6 +181,17 @@ class TestSnapshotSchema:
             "time_ms",
             "time_nano_part_ms",
             "evict_at",
+            "vap_poc",
+            "vap_val_area_low",
+            "vap_val_area_high",
+            "vap_imbalance",
+            "spread_p50",
+            "spread_p95",
+            "depth_at_poc_median",
+            "vpin",
+            "trade_side",
+            "cross_asset_vpin",
+            "systemic_score",
         }
         assert expected == field_names
 

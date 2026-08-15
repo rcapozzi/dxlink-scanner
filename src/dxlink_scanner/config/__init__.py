@@ -108,6 +108,10 @@ class DetectionConfig(BaseModel):
     vol_high: float = Field(default=0.03, gt=0)
     vol_crash: float = Field(default=0.05, gt=0)
     vol_target: float = Field(default=0.02, gt=0)
+    # Microstructure toxicity thresholds
+    vpin_threshold: float = Field(default=0.6, gt=0, le=1)
+    vpin_window_buckets: int = Field(default=265, ge=1)
+    vpin_bucket_volume: int = Field(default=1000, ge=1)
     # Regime-conditioned P95 thresholds (overrides base significance thresholds)
     p95_by_regime: dict[str, dict[str, float]] | None = None
 
