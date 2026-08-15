@@ -209,6 +209,7 @@ def _get_normalize_fn(event_type: type) -> Callable[..., ConsolidatedEvent]:
         return normalize_quote
     if event_type is DXTimeAndSale:
         return normalize_timeandsale
+    if event_type is DXTheoPrice:
         return normalize_theoprice
     raise ValueError(f"Unknown event type: {event_type}")
 
