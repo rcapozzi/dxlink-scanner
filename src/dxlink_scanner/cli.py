@@ -37,6 +37,7 @@ from dxlink_scanner.stats import (
     HawkesProcess,
     ModelSet,
     ModelStore,
+    RegimeDetector,
     RollingStatsManager,
     TimeOfDaySeasonality,
     prior_elicitation,
@@ -113,6 +114,7 @@ async def _consume_consolidated(
     hawkes_models: dict[str, HawkesProcess],
     seasonality_models: dict[str, TimeOfDaySeasonality],
     cross_symbol_pool: CrossSymbolPool | None = None,
+    regime_detectors: dict[str, RegimeDetector] | None = None,
     model_store: ModelStore | None = None,
     model_sets: dict[str, ModelSet] | None = None,
 ) -> None:
@@ -125,7 +127,8 @@ async def _consume_consolidated(
         if model_store and model_sets:
             model_store.maybe_checkpoint(
                 _compile_model_sets(model_sets, bayesian_models, hawkes_models,
-                                    seasonality_models, cross_symbol_pool)
+                                    seasonality_models, cross_symbol_pool,
+                                    regime_detectors or {})
             )
 
         # Only TAS events go to rule engine + sinks
@@ -187,12 +190,14 @@ def _compile_model_sets(
     hawkes_models: dict[str, HawkesProcess],
     seasonality_models: dict[str, TimeOfDaySeasonality],
     cross_symbol_pool: CrossSymbolPool | None = None,
+    regime_detectors: dict[str, RegimeDetector] | None = None,
 ) -> dict[str, ModelSet]:
     """Sync the individual model dicts into ModelSet objects for checkpointing."""
     for symbol, model_set in model_sets.items():
         model_set.bayesian = bayesian_models.get(symbol, BayesianGammaPoisson())
         model_set.hawkes = hawkes_models.get(symbol, HawkesProcess())
         model_set.seasonality = seasonality_models.get(symbol, TimeOfDaySeasonality())
+        model_set.regime = regime_detectors.get(symbol, RegimeDetector()) if regime_detectors else model_set.regime
         if cross_symbol_pool:
             model_set.pool = cross_symbol_pool
     return model_sets
@@ -420,6 +425,7 @@ async def _run_scanner(
     bayesian_models: dict[str, BayesianGammaPoisson] = {}
     hawkes_models: dict[str, HawkesProcess] = {}
     seasonality_models: dict[str, TimeOfDaySeasonality] = {}
+    regime_detectors: dict[str, RegimeDetector] = {}
     model_sets: dict[str, ModelSet] = {}
 
     # Create models for each ticker's underlying and a default
@@ -435,6 +441,11 @@ async def _run_scanner(
             bayesian_models[underlying] = ms.bayesian
             hawkes_models[underlying] = ms.hawkes
             seasonality_models[underlying] = ms.seasonality
+            regime_detectors[underlying] = RegimeDetector(
+                vol_low=config.detection.vol_low,
+                vol_high=config.detection.vol_high,
+                vol_crash=config.detection.vol_crash,
+            )
             model_sets[underlying] = ms
         else:
             alpha = hyperpriors.get("alpha", 1.0) if hyperpriors else 1.0
@@ -442,6 +453,11 @@ async def _run_scanner(
             bayesian_models[underlying] = BayesianGammaPoisson(alpha=alpha, beta=beta)
             hawkes_models[underlying] = HawkesProcess(mu=0.1, alpha=0.5, beta=1.0)
             seasonality_models[underlying] = TimeOfDaySeasonality()
+            regime_detectors[underlying] = RegimeDetector(
+                vol_low=config.detection.vol_low,
+                vol_high=config.detection.vol_high,
+                vol_crash=config.detection.vol_crash,
+            )
             model_sets[underlying] = ModelSet(
                 bayesian=bayesian_models[underlying],
                 hawkes=hawkes_models[underlying],
@@ -469,6 +485,7 @@ async def _run_scanner(
         hawkes_models=hawkes_models,
         seasonality_models=seasonality_models,
         cross_symbol_pool=cross_symbol_pool,
+        regime_detectors=regime_detectors,
     )
     logger.info("Using CEL rule engine")
     sinks: list[SinkType] = []
@@ -516,6 +533,7 @@ async def _run_scanner(
                 queue, store, rules, sinks,
                 bayesian_models, hawkes_models, seasonality_models,
                 cross_symbol_pool=cross_symbol_pool,
+                regime_detectors=regime_detectors,
                 model_store=model_store,
                 model_sets=model_sets,
             )
@@ -615,6 +633,7 @@ async def _run_scanner(
         checkpoint_models = _compile_model_sets(
             model_sets, bayesian_models, hawkes_models,
             seasonality_models, cross_symbol_pool,
+            regime_detectors or {},
         )
         model_store.save(checkpoint_models)
 

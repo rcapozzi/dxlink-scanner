@@ -96,6 +96,20 @@ class DetectionConfig(BaseModel):
     # V2 options
     stats_half_life_sec: float | None = Field(default=None, gt=0)
     stats_session_aware: bool = False
+    # Decision-theoretic alerting
+    cost_false_positive: float = Field(default=1.0, gt=0)
+    cost_false_negative: float = Field(default=10.0, gt=0)
+    cost_missed_regime_shift: float = Field(default=50.0, gt=0)
+    # Online FDR
+    fdr_alpha: float = Field(default=0.05, gt=0, le=1)
+    fdr_lag: int = Field(default=0, ge=0)
+    # Regime-aware thresholds
+    vol_low: float = Field(default=0.01, gt=0)
+    vol_high: float = Field(default=0.03, gt=0)
+    vol_crash: float = Field(default=0.05, gt=0)
+    vol_target: float = Field(default=0.02, gt=0)
+    # Regime-conditioned P95 thresholds (overrides base significance thresholds)
+    p95_by_regime: dict[str, dict[str, float]] | None = None
 
 
 class WebhookConfig(BaseModel):

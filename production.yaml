@@ -58,6 +58,30 @@ detection:
   size_mult: 2.0
   abs_min_size: 5
   stats_window: 50
+  stats_half_life_sec: 600.0
+  stats_session_aware: true
+  cost_false_positive: 1.0
+  cost_false_negative: 10.0
+  cost_missed_regime_shift: 50.0
+  fdr_alpha: 0.05
+  fdr_lag: 0
+  vol_low: 0.01
+  vol_high: 0.03
+  vol_crash: 0.05
+  vol_target: 0.02
+  p95_by_regime:
+    low_vol:
+      p95_size: 80
+      p95_delta_weighted_size: 100000
+    normal:
+      p95_size: 120
+      p95_delta_weighted_size: 200000
+    high_vol:
+      p95_size: 200
+      p95_delta_weighted_size: 500000
+    crash:
+      p95_size: 500
+      p95_delta_weighted_size: 1000000
 
 outputs:
   stdout: true

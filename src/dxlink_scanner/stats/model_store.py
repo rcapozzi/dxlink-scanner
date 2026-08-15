@@ -655,3 +655,52 @@ def hierarchical_fdr(
             result[idx] = rej
 
     return result
+
+
+class VolatilityTargeter:
+    """Adaptive threshold scaling based on realized volatility.
+
+    Implements the regime-aware volatility targeting strategy:
+    alert thresholds scale with realized vol:
+        threshold = base * (vol_target / current_vol)
+
+    When current volatility is below target, thresholds widen (fewer alerts).
+    When current volatility is above target, thresholds tighten (more sensitive).
+    """
+
+    def __init__(self, vol_target: float = 0.02) -> None:
+        self.vol_target = vol_target
+
+    def adjusted_threshold(self, current_vol: float, base_threshold: float) -> float:
+        """Scale a base threshold by the volatility ratio.
+
+        Args:
+            current_vol: Current realized volatility (annualized or window-based).
+            base_threshold: The base alert threshold (e.g., P95 size).
+
+        Returns:
+            Adjusted threshold that adapts to volatility regime.
+        """
+        if current_vol <= 0:
+            return base_threshold
+        ratio = self.vol_target / current_vol
+        # Clamp ratio to avoid extreme adjustments
+        ratio = max(0.1, min(ratio, 10.0))
+        return base_threshold * ratio
+
+    def effective_window(self, base_window: int, current_vol: float) -> int:
+        """Adaptive window size: expands in low-vol, contracts in high-vol.
+
+        Args:
+            base_window: The baseline rolling window size.
+            current_vol: Current realized volatility.
+
+        Returns:
+            Adjusted window size (bounded to [10, 1000]).
+        """
+        if current_vol <= 0:
+            return base_window
+        ratio = self.vol_target / current_vol
+        adjusted = int(base_window * ratio)
+        return max(10, min(adjusted, 1000))
+

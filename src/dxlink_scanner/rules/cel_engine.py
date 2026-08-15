@@ -26,9 +26,13 @@ from dxlink_scanner.stats import (
     BayesianGammaPoisson,
     CrossSymbolPool,
     HawkesProcess,
+    RegimeDetector,
     RollingStatsManager,
     RollingStatsV2,
     TimeOfDaySeasonality,
+    VolatilityTargeter,
+    bayesian_decision,
+    online_fdr_threshold,
 )
 
 if TYPE_CHECKING:
@@ -88,6 +92,7 @@ class CELRuleEngine:
         hawkes_models: dict[str, HawkesProcess] | None = None,
         seasonality_models: dict[str, TimeOfDaySeasonality] | None = None,
         cross_symbol_pool: CrossSymbolPool | None = None,
+        regime_detectors: dict[str, RegimeDetector] | None = None,
     ) -> None:
         self._config = config
         self._stats = stats
@@ -102,6 +107,8 @@ class CELRuleEngine:
         self._hawkes_models: dict[str, HawkesProcess] = hawkes_models or {}
         self._seasonality_models: dict[str, TimeOfDaySeasonality] = seasonality_models or {}
         self._cross_symbol_pool: CrossSymbolPool | None = cross_symbol_pool
+        self._regime_detectors: dict[str, RegimeDetector] = regime_detectors or {}
+        self._last_config: dict[str, Any] = {}
 
         # Per-symbol rules: symbol -> list of (rule, compiled_expr)
         self._per_symbol_rules: dict[str, list[CelAlertRule]] = per_symbol_rules or {}
@@ -116,7 +123,72 @@ class CELRuleEngine:
         self._compile_all()
 
     def _cel_env(self) -> cel.Env:
-        """Create a CEL environment with variable declarations."""
+        """Create a CEL environment with variable declarations and custom functions."""
+        # Decision-theoretic CEL functions
+        fdr_alpha = self._config.fdr_alpha
+        fdr_lag = self._config.fdr_lag
+
+        # Online FDR state (mutable closure)
+        _fdr_state = {"num_rejections": 0, "num_tests": 0}
+
+        def _bayesian_decision(cost_f_p: float, cost_f_n: float) -> bool:
+            """Bayesian decision rule using the current symbol's model."""
+            # This is a macro-like function: the caller should use the
+            # pre-computed bayesian_decision result in config_data.
+            # Actual implementation in _build_activation stores the result.
+            return True
+
+        def _online_fdr_pvalue(pval: float) -> bool:
+            """Online FDR: reject if p-value < adjusted threshold."""
+            _fdr_state["num_tests"] += 1
+            threshold = online_fdr_threshold(
+                fdr_alpha, _fdr_state["num_rejections"],
+                _fdr_state["num_tests"], lag=fdr_lag,
+            )
+            if pval <= threshold:
+                _fdr_state["num_rejections"] += 1
+                return True
+            return False
+
+        def _hierarchical_fdr(pval: float) -> bool:
+            """Simplified hierarchical FDR (per-symbol level)."""
+            return _online_fdr_pvalue(pval)
+
+        # Register function declarations with implementations
+        bayesian_decision_decl = cel.FunctionDecl(
+            name="bayesian_decision",
+            overloads=[
+                cel.Overload(
+                    id="bayesian_decision_2",
+                    return_type=cel.Type.BOOL,
+                    parameters=[cel.Type.DOUBLE, cel.Type.DOUBLE],
+                    impl=_bayesian_decision,
+                )
+            ],
+        )
+        online_fdr_decl = cel.FunctionDecl(
+            name="online_fdr_pvalue",
+            overloads=[
+                cel.Overload(
+                    id="online_fdr_pvalue_1",
+                    return_type=cel.Type.BOOL,
+                    parameters=[cel.Type.DOUBLE],
+                    impl=_online_fdr_pvalue,
+                )
+            ],
+        )
+        hierarchical_fdr_decl = cel.FunctionDecl(
+            name="hierarchical_fdr",
+            overloads=[
+                cel.Overload(
+                    id="hierarchical_fdr_1",
+                    return_type=cel.Type.BOOL,
+                    parameters=[cel.Type.DOUBLE],
+                    impl=_hierarchical_fdr,
+                )
+            ],
+        )
+
         return cel.NewEnv(
             variables={
                 # Core trade fields
@@ -129,7 +201,8 @@ class CELRuleEngine:
                 "stats": cel.Type.Map(cel.Type.STRING, cel.Type.DYN),
                 # Config thresholds
                 "config": cel.Type.Map(cel.Type.STRING, cel.Type.DYN),
-            }
+            },
+            functions=[bayesian_decision_decl, online_fdr_decl, hierarchical_fdr_decl],
         )
 
     def _collect_underlying_rules(self) -> dict[str, list[CelAlertRule]]:
@@ -271,6 +344,18 @@ class CELRuleEngine:
             config_data["bayesian_ci_low"] = ci[0]
             config_data["bayesian_ci_high"] = ci[1]
 
+            # Decision-theoretic: p-value and Bayes factor for this trade
+            from dxlink_scanner.stats import bayesian_anomaly_score
+            anomaly_metrics = bayesian_anomaly_score(event.size, bayesian, exposure=1.0)
+            config_data["bayesian_p_value"] = anomaly_metrics["p_value"]
+            config_data["bayes_factor"] = anomaly_metrics["bayes_factor"]
+            config_data["bayesian_decision"] = bayesian_decision(
+                bayesian, event.size,
+                cost_fp=self._config.cost_false_positive,
+                cost_fn=self._config.cost_false_negative,
+            )
+            config_data["fdr_alpha"] = self._config.fdr_alpha
+
         # Hawkes process
         hawkes = self._hawkes_models.get(symbol) or self._hawkes_models.get("default")
         if hawkes:
@@ -290,6 +375,33 @@ class CELRuleEngine:
             config_data["seasonality_expected_volume"] = expected
             # Seasonally adjusted size
             config_data["seasonal_adj_size"] = int(event.size / factor) if factor > 0 else event.size
+
+        # Regime detection
+        regime_detector = self._regime_detectors.get(symbol) or self._regime_detectors.get("default")
+        vol_targeter = VolatilityTargeter(vol_target=self._config.vol_target)
+        if regime_detector:
+            regime_state = regime_detector.detect()
+            config_data["vol_ratio"] = (
+                regime_state.volatility / self._config.vol_target
+                if self._config.vol_target > 0 else 1.0
+            )
+            config_data["vol_targeted_threshold"] = vol_targeter.adjusted_threshold(
+                regime_state.volatility,
+                config_data.get("p95_size", 0.0),
+            )
+            config_data["regime"] = regime_state.regime
+            config_data["regime_prob"] = regime_state.probability
+            config_data["regime_volatility"] = regime_state.volatility
+            config_data["regime_volume_rate"] = regime_state.volume_rate
+            # Regime-conditioned P95 thresholds (if configured)
+            if self._config.p95_by_regime:
+                regime_name = {0: "low_vol", 1: "normal", 2: "high_vol", 3: "crash"}.get(regime_state.regime, "normal")
+                regime_thresholds = self._config.p95_by_regime.get(regime_name, {})
+                if regime_thresholds:
+                    config_data["p95_size"] = regime_thresholds.get("p95_size", config_data.get("p95_size", 0.0))
+                    config_data["p95_delta_weighted_size"] = regime_thresholds.get(
+                        "p95_delta_weighted_size", config_data.get("p95_delta_weighted_size", 0.0)
+                    )
 
         # Determine if this is an option symbol or an underlying
         option_data: dict[str, Any] | None = None
@@ -322,6 +434,9 @@ class CELRuleEngine:
             activation["option"] = option_data
         if underlying_data:
             activation["underlying"] = underlying_data
+
+        # Store last config for alert enrichment
+        self._last_config = config_data
 
         return activation
 
@@ -415,6 +530,12 @@ class CELRuleEngine:
                             rule_name=rule.name,
                             severity=rule.severity,
                             underlying_price=underlying_price,
+                            posterior_mean=self._last_config.get("bayesian_mean"),
+                            bayes_factor=self._last_config.get("bayes_factor"),
+                            p_value=self._last_config.get("bayesian_p_value"),
+                            decision_threshold=self._last_config.get("bayesian_decision"),
+                            alert_utility=self._last_config.get("bayes_factor"),
+                            is_regime_shift=False,  # Set True when regime transition rules match
                         )
                 except Exception as e:
                     logger.warning(

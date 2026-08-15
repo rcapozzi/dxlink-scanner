@@ -5,6 +5,7 @@ from dxlink_scanner.stats.model_store import (
     CalibrationDiagnostics,
     ModelSet,
     ModelStore,
+    VolatilityTargeter,
     bayesian_decision,
     hierarchical_fdr,
     online_fdr_threshold,
@@ -47,4 +48,5 @@ __all__ = [
     "bayesian_decision",
     "online_fdr_threshold",
     "hierarchical_fdr",
+    "VolatilityTargeter",
 ]

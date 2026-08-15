@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import tempfile
 
 import pytest
@@ -13,14 +14,15 @@ from dxlink_scanner.stats import (
     HawkesProcess,
     ModelSet,
     ModelStore,
+    RegimeDetector,
     TimeOfDaySeasonality,
+    VolatilityTargeter,
     VolumeAtPrice,
     bayesian_decision,
     hierarchical_fdr,
     online_fdr_threshold,
     prior_elicitation,
 )
-from dxlink_scanner.stats.statistical_analysis import RegimeDetector
 
 
 class TestModelSerialization:
@@ -57,7 +59,6 @@ class TestModelSerialization:
 
     def test_seasonality_round_trip(self) -> None:
         tod = TimeOfDaySeasonality(bin_edges=[570, 600, 630])
-        import datetime as dt
         tod.add_observation(dt.datetime(2024, 1, 15, 13, 30, tzinfo=dt.UTC), 100.0)
         tod.add_observation(dt.datetime(2024, 1, 15, 14, 0, tzinfo=dt.UTC), 200.0)
         data = tod.to_dict()
@@ -333,6 +334,88 @@ class TestDecisionFunctions:
     def test_hierarchical_fdr_empty(self) -> None:
         result = hierarchical_fdr([], alpha=0.05)
         assert result == []
+
+
+class TestVolatilityTargeter:
+    """Tests for the VolatilityTargeter class."""
+
+    def test_adjusted_threshold_low_vol(self) -> None:
+        vt = VolatilityTargeter(vol_target=0.02)
+        # Current vol below target → threshold should be higher
+        result = vt.adjusted_threshold(current_vol=0.01, base_threshold=100.0)
+        assert result > 100.0
+
+    def test_adjusted_threshold_high_vol(self) -> None:
+        vt = VolatilityTargeter(vol_target=0.02)
+        # Current vol above target → threshold should be lower
+        result = vt.adjusted_threshold(current_vol=0.04, base_threshold=100.0)
+        assert result < 100.0
+
+    def test_adjusted_threshold_at_target(self) -> None:
+        vt = VolatilityTargeter(vol_target=0.02)
+        result = vt.adjusted_threshold(current_vol=0.02, base_threshold=100.0)
+        assert result == pytest.approx(100.0)
+
+    def test_adjusted_threshold_zero_vol(self) -> None:
+        vt = VolatilityTargeter(vol_target=0.02)
+        result = vt.adjusted_threshold(current_vol=0.0, base_threshold=100.0)
+        assert result == 100.0  # fallback to base
+
+    def test_effective_window_low_vol(self) -> None:
+        vt = VolatilityTargeter(vol_target=0.02)
+        # Low vol → wider window
+        result = vt.effective_window(base_window=50, current_vol=0.01)
+        assert result > 50
+
+    def test_effective_window_high_vol(self) -> None:
+        vt = VolatilityTargeter(vol_target=0.02)
+        # High vol → narrower window
+        result = vt.effective_window(base_window=50, current_vol=0.04)
+        assert result < 50
+
+    def test_effective_window_bounds(self) -> None:
+        vt = VolatilityTargeter(vol_target=0.02)
+        result = vt.effective_window(base_window=50, current_vol=0.0001)
+        assert result <= 1000  # clamped to max
+        result = vt.effective_window(base_window=50, current_vol=100.0)
+        assert result >= 10  # clamped to min
+
+
+class TestRegimeDetector:
+    """Tests for regime detection and serialization."""
+
+    def test_detect_low_vol(self) -> None:
+        rd = RegimeDetector(vol_low=0.01, vol_high=0.03, vol_crash=0.05)
+        for i in range(15):
+            rd.update(100.0 + i * 0.001, 100)  # very low vol
+        state = rd.detect()
+        assert 0 <= state.regime <= 3
+        assert 0.0 <= state.probability <= 1.0
+
+    def test_detect_high_vol(self) -> None:
+        rd = RegimeDetector(vol_low=0.01, vol_high=0.03, vol_crash=0.05)
+        for i in range(15):
+            rd.update(100.0 + i * 5.0, 100)  # high vol
+        state = rd.detect()
+        assert state.regime == 3  # crash
+        assert state.probability > 0.5
+
+    def test_regime_detector_round_trip(self) -> None:
+        rd = RegimeDetector(vol_low=0.01, vol_high=0.03, vol_crash=0.05, vol_window=50)
+        for i in range(15):
+            rd.update(100.0 + i * 0.1, 100)
+        data = rd.to_dict()
+        restored = RegimeDetector.from_dict(data)
+        assert restored.vol_low == 0.01
+        assert restored.vol_high == 0.03
+        assert restored.vol_crash == 0.05
+        assert restored.vol_window == 50
+        assert restored._returns == rd._returns
+        assert restored._volumes == rd._volumes
+        # Functional equivalence
+        state_orig = rd.detect()
+        state_restored = restored.detect()
+        assert state_orig.regime == state_restored.regime
 
 
 if __name__ == "__main__":

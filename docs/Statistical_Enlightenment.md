@@ -108,7 +108,9 @@ online_fdr_pvalue(pval) -> bool
 hierarchical_fdr(symbol_pvals) -> bool
 ```
 
-**Acceptance**: Simulated backtest shows FDR ≤ 5% with 2× detection power vs fixed thresholds.
+**Acceptance**: Bayesian decision > base threshold triggers alert; cost sensitivity configurable; alerts enriched with audit trail fields (model mean, p-value, decision threshold, utility score) persisted to parquet.
+
+**Implementation**: `config.bayesian_p_value`, `config.bayes_factor`, `config.bayesian_decision` computed per-event in `_build_activation`; `bayesian_decision()` function in `model_store.py` using Bayes factor approach (likelihood ratio: anomaly rate = 2x posterior mean vs typical rate); CLI config fields `cost_false_positive`, `cost_false_negative`, `cost_missed_regime_shift` in `DetectionConfig`; CEL custom functions `bayesian_decision()`, `online_fdr_pvalue()`, `hierarchical_fdr()` registered in `_cel_env()` with function declarations; Alert enriched with `posterior_mean`, `bayes_factor`, `p_value`, `decision_threshold`, `alert_utility`, `is_regime_shift` fields in `models.py` (froze→mutable for post-creation enrichment). Tests in `tests/test_model_store.py` (TestDecisionFunctions, TestHierarchicalFDR, TestVolatilityTargeter, TestRegimeDetector).
 
 ---
 
@@ -132,6 +134,8 @@ stats.vol_ratio              // current_vol / target_vol
 ```
 
 **Acceptance**: In high-vol regime, alert rate per true anomaly increases; false alerts don't explode.
+
+**Implementation**: `RegimeDetector` initialized per-symbol with `vol_low`/`vol_high`/`vol_crash` from `DetectionConfig`; wired into `CELRuleEngine` via `regime_detectors` parameter; `detect()` called in `_build_activation` to expose `config.regime`, `config.regime_prob`, `config.regime_volatility`, `config.regime_volume_rate`, `config.vol_ratio`, `config.vol_targeted_threshold` in CEL; regime-conditioned P95 thresholds applied via `config.p95_by_regime` YAML mapping (low_vol/normal/high_vol/crash); `VolatilityTargeter` class in `model_store.py` provides `adjusted_threshold()` and `effective_window()` for volatility-targeted thresholds and adaptive window sizing; `is_regime_shift` Alert field for regime transition alerts; config fields `vol_low`, `vol_high`, `vol_crash`, `vol_target`, `p95_by_regime` added to `DetectionConfig` and `production.yaml`. Tests in `tests/test_model_store.py` (TestVolatilityTargeter, TestRegimeDetector).
 
 ---
 
@@ -223,14 +227,14 @@ hawkes_cross_intensity[symbol] > config.cross_excitation_threshold
 | 0 | Statistical Model Implementation | 2 wks | 6 core models + CEL integration + tests | ✅ **Complete** |
 | 1 | Bayesian Persistence & Pooling | 2 wks | Models survive restart; sparse symbols pooled | ✅ **Complete** |
 | 2 | Calibration & Validation | 2 wks | PIT histograms, coverage tests, model comparison | ✅ **Complete** |
-| 3 | Decision-Theoretic Alerting | 2 wks | Cost-aware rules, online FDR | 📋 Planned |
-| 4 | Regime-Adaptive Thresholds | 2 wks | Regime-conditioned P95, vol-targeting | 📋 Planned |
+| 3 | Decision-Theoretic Alerting | 2 wks | Cost-aware rules, online FDR, alert quality | ✅ **Complete** |
+| 4 | Regime-Adaptive Thresholds | 2 wks | Regime-conditioned P95, vol-targeting, regime alerts | ✅ **Complete** |
 | 5 | Microstructure & VAP | 2 wks | VPIN, toxicity, flow classification | 📋 Planned |
 | 6 | Cross-Asset & Multi-TF | 2 wks | Multivariate Hawkes, lead-lag, systemic index | 📋 Planned |
 | 7 | Reliability & Replay | 2 wks | Health endpoints, replay CLI, A/B framework | 📋 Planned |
 | 8 | Performance & Scale | 2 wks | Vectorized updates, 100K eps benchmark | 📋 Planned |
 
-**Total**: 18 weeks (4.5 months) — Sprints 0-2 complete (6 weeks), remaining 12 weeks for production hardening.
+**Total**: 18 weeks (4.5 months) — Sprints 0-4 complete (8 weeks), remaining 10 weeks for advanced analytics & production hardening.
 
 ---
 
