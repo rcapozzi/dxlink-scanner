@@ -82,6 +82,7 @@ class VectorizedBayesianUpdater:
     def credible_interval_batch(self, confidence: float = 0.95) -> dict[str, tuple[float, float]]:
         """Compute credible intervals for all symbols in batch."""
         from scipy.stats import gamma  # type: ignore[import-untyped]
+
         alpha = confidence
         lower_q = (1 - alpha) / 2
         upper_q = 1 - lower_q

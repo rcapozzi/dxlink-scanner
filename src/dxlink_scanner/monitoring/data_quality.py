@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class GapReport:
     """Report of detected gaps in event timestamps."""
+
     symbol: str
     gap_start: dt.datetime
     gap_end: dt.datetime
@@ -39,6 +40,7 @@ class GapReport:
 @dataclass
 class SchemaDriftReport:
     """Report of schema drift between expected and actual parquet files."""
+
     file_path: str
     expected_fields: list[str]
     actual_fields: list[str]
@@ -49,6 +51,7 @@ class SchemaDriftReport:
 @dataclass
 class ModelParamOutlier:
     """Report of an outlier in model parameters."""
+
     symbol: str
     parameter: str
     current_value: float
@@ -109,14 +112,15 @@ class DataQualityMonitor:
                 self._gaps.append(report)
                 logger.warning(
                     "Gap detected for %s: %.1fs (last=%s, current=%s)",
-                    symbol, gap, prev.isoformat(), timestamp.isoformat(),
+                    symbol,
+                    gap,
+                    prev.isoformat(),
+                    timestamp.isoformat(),
                 )
                 return report
         return None
 
-    def detect_gaps_in_parquet(
-        self, parquet_path: str | Path, timestamp_col: str = "event_time_ms"
-    ) -> list[GapReport]:
+    def detect_gaps_in_parquet(self, parquet_path: str | Path, timestamp_col: str = "event_time_ms") -> list[GapReport]:
         """Scan a parquet file for timestamp gaps.
 
         Args:
@@ -149,20 +153,20 @@ class DataQualityMonitor:
             for i in range(1, len(ts_list)):
                 gap_sec = (ts_list[i] - ts_list[i - 1]) / 1000.0
                 if gap_sec > self.max_gap_sec:
-                    gaps.append(GapReport(
-                        symbol=sym,
-                        gap_start=dt.datetime.fromtimestamp(ts_list[i - 1] / 1000, tz=dt.UTC),
-                        gap_end=dt.datetime.fromtimestamp(ts_list[i] / 1000, tz=dt.UTC),
-                        gap_duration_sec=gap_sec,
-                        event_count_before=i,
-                        event_count_after=len(ts_list) - i,
-                    ))
+                    gaps.append(
+                        GapReport(
+                            symbol=sym,
+                            gap_start=dt.datetime.fromtimestamp(ts_list[i - 1] / 1000, tz=dt.UTC),
+                            gap_end=dt.datetime.fromtimestamp(ts_list[i] / 1000, tz=dt.UTC),
+                            gap_duration_sec=gap_sec,
+                            event_count_before=i,
+                            event_count_after=len(ts_list) - i,
+                        )
+                    )
 
         return gaps
 
-    def check_schema_drift(
-        self, parquet_path: str | Path, expected_fields: list[str]
-    ) -> SchemaDriftReport | None:
+    def check_schema_drift(self, parquet_path: str | Path, expected_fields: list[str]) -> SchemaDriftReport | None:
         """Check a parquet file for schema drift.
 
         Args:
@@ -228,9 +232,7 @@ class ModelParamTracker:
         self.history_window = history_window
         self._history: dict[str, dict[str, list[float]]] = {}
 
-    def record(
-        self, symbol: str, params: dict[str, float]
-    ) -> list[ModelParamOutlier]:
+    def record(self, symbol: str, params: dict[str, float]) -> list[ModelParamOutlier]:
         """Record parameter values for a symbol; return outliers.
 
         Args:
@@ -256,17 +258,24 @@ class ModelParamTracker:
                 if std > 0:
                     z_score = abs(value - mean) / std
                     if z_score > self.z_threshold:
-                        outliers.append(ModelParamOutlier(
-                            symbol=symbol,
-                            parameter=param_name,
-                            current_value=value,
-                            historical_mean=mean,
-                            historical_std=std,
-                            z_score=z_score,
-                        ))
+                        outliers.append(
+                            ModelParamOutlier(
+                                symbol=symbol,
+                                parameter=param_name,
+                                current_value=value,
+                                historical_mean=mean,
+                                historical_std=std,
+                                z_score=z_score,
+                            )
+                        )
                         logger.warning(
                             "Model param outlier: %s.%s = %.6f (z=%.2f, mean=%.6f, std=%.6f)",
-                            symbol, param_name, value, z_score, mean, std,
+                            symbol,
+                            param_name,
+                            value,
+                            z_score,
+                            mean,
+                            std,
                         )
 
             # Append to history (maintain window)

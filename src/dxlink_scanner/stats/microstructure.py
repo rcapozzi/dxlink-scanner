@@ -23,6 +23,7 @@ from dxlink_scanner.models import ConsolidatedSnapshot
 @dataclass
 class TradeClassification:
     """Result of classifying a trade as buyer-initiated or seller-initiated."""
+
     side: str  # "buy", "sell", "unknown"
     is_informed: bool  # Whether classified using tick rule vs. bid-ask
     confidence: float  # 0.0 to 1.0
@@ -72,33 +73,21 @@ class OrderFlowClassifier:
             # Trade within the spread — use tick rule or EMO
             if tick_direction is not None and tick_direction != 0:
                 side = "buy" if tick_direction > 0 else "sell"
-                return TradeClassification(
-                    side=side, is_informed=False, confidence=0.5
-                )
+                return TradeClassification(side=side, is_informed=False, confidence=0.5)
             # EMO: compare to previous midpoint
             if prev_mid is not None:
                 side = "buy" if trade_price > prev_mid else "sell"
-                return TradeClassification(
-                    side=side, is_informed=False, confidence=0.3
-                )
-            return TradeClassification(
-                side="unknown", is_informed=False, confidence=0.0
-            )
+                return TradeClassification(side=side, is_informed=False, confidence=0.3)
+            return TradeClassification(side="unknown", is_informed=False, confidence=0.0)
 
         # No bid/ask available — use tick rule or EMO
         if tick_direction is not None and tick_direction != 0:
             side = "buy" if tick_direction > 0 else "sell"
-            return TradeClassification(
-                side=side, is_informed=False, confidence=0.4
-            )
+            return TradeClassification(side=side, is_informed=False, confidence=0.4)
         if prev_mid is not None:
             side = "buy" if trade_price > prev_mid else "sell"
-            return TradeClassification(
-                side=side, is_informed=False, confidence=0.2
-            )
-        return TradeClassification(
-            side="unknown", is_informed=False, confidence=0.0
-        )
+            return TradeClassification(side=side, is_informed=False, confidence=0.2)
+        return TradeClassification(side="unknown", is_informed=False, confidence=0.0)
 
 
 class VPINCalculator:
@@ -127,9 +116,7 @@ class VPINCalculator:
         self._current_buy_vol: float = 0.0
         self._current_sell_vol: float = 0.0
         # Rolling window of completed bucket VPINs
-        self._bucket_vpins: collections.deque[float] = collections.deque(
-            maxlen=window_buckets
-        )
+        self._bucket_vpins: collections.deque[float] = collections.deque(maxlen=window_buckets)
         # For tick-direction tracking
         self._prev_price: float | None = None
 
@@ -149,9 +136,7 @@ class VPINCalculator:
         if bid_price is not None and ask_price is not None:
             prev_mid = (bid_price + ask_price) / 2.0
 
-        classification = self._classifier.classify(
-            price, bid_price, ask_price, prev_mid, tick_direction
-        )
+        classification = self._classifier.classify(price, bid_price, ask_price, prev_mid, tick_direction)
         self._prev_price = price
 
         # Add volume to the appropriate side
@@ -273,6 +258,7 @@ class FlowMetrics:
     Bundles order flow classification, VPIN, and liquidity metrics
     into a single object that can be serialized and used in CEL rules.
     """
+
     symbol: str
     vpin: VPINCalculator = field(default_factory=lambda: VPINCalculator())
     liquidity: LiquidityMetrics = field(default_factory=lambda: LiquidityMetrics())
@@ -311,6 +297,7 @@ class CrossAssetFlowState:
     - Lead-lag analysis (does SPY volume lead QQQ?)
     - Cross-asset anomaly aggregation (systemic flow index)
     """
+
     symbol: str
     volumes: collections.deque = field(default_factory=lambda: collections.deque(maxlen=1000))
     timestamps: collections.deque = field(default_factory=lambda: collections.deque(maxlen=1000))
@@ -342,6 +329,7 @@ class CrossAssetHawkes:
         alpha: Excitation matrix [from_symbol][to_symbol] -> excitation factor.
         decay: Exponential decay rate for excitation.
     """
+
     symbols: list[str]
     mu: float = 0.1
     alpha: dict[str, dict[str, float]] = field(default_factory=dict)
@@ -453,8 +441,8 @@ def compute_lead_lag(
     for lag in range(1, max_lag + 1):
         if len(vols_a) <= lag or len(vols_b) <= lag:
             continue
-        a = vols_a[:len(vols_a) - lag] if len(vols_a) > lag else vols_a
-        b = vols_b[lag:lag + len(a)] if len(vols_b) > lag + len(a) else vols_b[:len(a)]
+        a = vols_a[: len(vols_a) - lag] if len(vols_a) > lag else vols_a
+        b = vols_b[lag : lag + len(a)] if len(vols_b) > lag + len(a) else vols_b[: len(a)]
         if len(a) < 2 or len(b) < 2 or len(a) != len(b):
             continue
         try:

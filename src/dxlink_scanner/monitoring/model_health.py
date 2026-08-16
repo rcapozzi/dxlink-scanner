@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ModelHealthSnapshot:
     """Health snapshot for a single model set."""
+
     symbol: str
     last_update: dt.datetime | None = None
     n_observations: int = 0
@@ -177,16 +178,15 @@ class ModelHealthMonitor:
                         # KS-like test: if PIT values are roughly uniform [0,1]
                         # check if they deviate from uniform
                         n = len(pit)
+
                         def expected_cdf(x: float) -> float:
                             return x  # uniform CDF
+
                         pit_sorted = sorted(pit)
-                        ks_stat = max(
-                            abs((i + 1) / n - expected_cdf(v))
-                            for i, v in enumerate(pit_sorted)
-                        )
+                        ks_stat = max(abs((i + 1) / n - expected_cdf(v)) for i, v in enumerate(pit_sorted))
                         # Rough KS threshold for n>10
                         if n > 10:
-                            ks_threshold = 1.36 / (n ** 0.5)  # 95% KS critical value
+                            ks_threshold = 1.36 / (n**0.5)  # 95% KS critical value
                             snap.pit_uniformity_pvalue = 1.0 - ks_stat / ks_threshold
                         else:
                             snap.pit_uniformity_pvalue = None

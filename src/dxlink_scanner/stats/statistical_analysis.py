@@ -328,9 +328,7 @@ class CrossSymbolPool:
     def update_symbol(self, symbol: str, count: int, exposure: float = 1.0) -> None:
         """Update a symbol's posterior."""
         if symbol not in self.symbol_posteriors:
-            self.symbol_posteriors[symbol] = BayesianGammaPoisson(
-                alpha=self.global_alpha, beta=self.global_beta
-            )
+            self.symbol_posteriors[symbol] = BayesianGammaPoisson(alpha=self.global_alpha, beta=self.global_beta)
         self.symbol_posteriors[symbol].update(count, exposure)
 
     def get_pooled_estimate(self, symbol: str, shrinkage: float = 0.5) -> float:
@@ -360,9 +358,7 @@ class CrossSymbolPool:
         return {
             "global_alpha": self.global_alpha,
             "global_beta": self.global_beta,
-            "symbol_posteriors": {
-                sym: post.to_dict() for sym, post in self.symbol_posteriors.items()
-            },
+            "symbol_posteriors": {sym: post.to_dict() for sym, post in self.symbol_posteriors.items()},
         }
 
     @classmethod
@@ -509,11 +505,11 @@ class RegimeDetector:
             return RegimeState(regime=1, probability=1.0, volatility=0.0, volume_rate=0.0)
 
         # Volatility (std of log returns)
-        returns = np.array(self._returns[-self.vol_window:])
+        returns = np.array(self._returns[-self.vol_window :])
         vol = float(np.std(returns)) if len(returns) > 1 else 0.0
 
         # Volume rate
-        vol_rate = float(np.mean(self._volumes[-self.vol_window:])) if self._volumes else 0.0
+        vol_rate = float(np.mean(self._volumes[-self.vol_window :])) if self._volumes else 0.0
 
         # Classify
         if vol >= self.vol_crash:
@@ -597,8 +593,7 @@ def bayesian_anomaly_score(
 
     # Likelihood ratio
     if null_rate > 0 and alt_rate > 0:
-        bf = (scipy_stats.poisson.pmf(observed, alt_rate) /
-              scipy_stats.poisson.pmf(observed, null_rate))
+        bf = scipy_stats.poisson.pmf(observed, alt_rate) / scipy_stats.poisson.pmf(observed, null_rate)
     else:
         bf = 1.0
 
@@ -614,4 +609,3 @@ def bayesian_anomaly_score(
         "bayes_factor": bf,
         "significant": p_val < 0.05 and observed > pred_mean,
     }
-

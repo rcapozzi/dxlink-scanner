@@ -24,6 +24,7 @@ def stringify_keys(obj):
     else:
         return obj
 
+
 async def resolve_futures_root_symbol(session, symbol):
     """DXLink valid symbols are /ES:XCME and /ESU6:XCME"""
     data = await session._get(API_URL + f"/instruments/futures/?product-code[]={symbol.replace('/', '')}")
@@ -34,13 +35,14 @@ async def resolve_futures_root_symbol(session, symbol):
         {
             "streamer-symbol": item.get("streamer-symbol"),
             "streamer-exchange-code": item.get("streamer-exchange-code"),
-            "streamer-root-symbol": symbol +":" + item.get("streamer-exchange-code"),
+            "streamer-root-symbol": symbol + ":" + item.get("streamer-exchange-code"),
             "symbol": item["symbol"],
             "root-symbol": item.get("root-symbol"),
         }
         for item in data["items"]
         if item.get("active") and item.get("active-month")
     ]
+
 
 async def resolve_futures(session, symbol):
     data = await resolve_futures_root_symbol(session, symbol)
@@ -50,16 +52,14 @@ async def resolve_futures(session, symbol):
     key, value = min(data.items(), key=lambda item: item[0])
     print(key)
 
-
     return
     with open("data/chain.py", "w", encoding="utf-8") as f:
         pprint(data, stream=f, sort_dicts=True)
-    #with open("data/chain.yaml", "w", encoding="utf-8") as f:
+    # with open("data/chain.yaml", "w", encoding="utf-8") as f:
     #    yaml.dump(data, f, sort_keys=True)
 
-    #print(json.dumps(data,indent=2))
+    # print(json.dumps(data,indent=2))
     return
-
 
 
 async def resolve_equity(session, symbol):

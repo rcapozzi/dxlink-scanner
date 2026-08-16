@@ -124,7 +124,9 @@ def benchmark_cel_evaluation(iterations: int = 10000) -> dict:
     ]
 
     rules = CELRuleEngine(
-        detection, watchlist, stats_mgr,
+        detection,
+        watchlist,
+        stats_mgr,
         default_rules=default_rules,
     )
 
@@ -181,7 +183,9 @@ def benchmark_end_to_end(iterations: int = 10000) -> dict:
     hawkes = HawkesProcess(mu=0.1, alpha=0.5, beta=1.0)
 
     rules = CELRuleEngine(
-        detection, watchlist, stats_mgr,
+        detection,
+        watchlist,
+        stats_mgr,
         bayesian_models={"SPY": bayesian},
         hawkes_models={"SPY": hawkes},
         default_rules=default_rules,
@@ -283,8 +287,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Benchmark scanner performance")
     parser.add_argument("--iterations", type=int, default=10000, help="Number of iterations per benchmark")
     parser.add_argument("--output", type=Path, default=None, help="Output JSON path")
-    parser.add_argument("--log-level", type=str, default="INFO",
-                        choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+    parser.add_argument("--log-level", type=str, default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -308,7 +311,10 @@ def main() -> None:
         results.append(result)
         logger.info(
             "  %s: p50=%.4fms, p95=%.4fms, p99=%.4fms",
-            result["name"], result["p50_ms"], result["p95_ms"], result["p99_ms"],
+            result["name"],
+            result["p50_ms"],
+            result["p95_ms"],
+            result["p99_ms"],
         )
 
     output = {

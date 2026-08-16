@@ -46,10 +46,12 @@ class TestDataQualityMonitor:
     def test_gap_in_parquet(self, tmp_path: Path) -> None:
         dqm = DataQualityMonitor(max_gap_sec=60.0)
         # Create a parquet file with symbol + event_time_ms columns
-        table = pa.table({
-            "symbol": ["SPY", "SPY", "QQQ", "QQQ"],
-            "event_time_ms": [1700000000000, 1700000090000, 1700000000000, 1700000000000],
-        })
+        table = pa.table(
+            {
+                "symbol": ["SPY", "SPY", "QQQ", "QQQ"],
+                "event_time_ms": [1700000000000, 1700000090000, 1700000000000, 1700000000000],
+            }
+        )
         parquet_path = tmp_path / "test.parquet"
         pq.write_table(table, str(parquet_path))
         gaps = dqm.detect_gaps_in_parquet(parquet_path)
@@ -164,6 +166,7 @@ class TestModelHealthMonitor:
         snapshots = monitor.check_all()
         json_str = monitor.to_json(snapshots)
         import json
+
         data = json.loads(json_str)
         assert len(data) == 1
         assert data[0]["symbol"] == "SPY"

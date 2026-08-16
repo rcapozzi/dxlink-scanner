@@ -21,18 +21,20 @@ class TestLoadEventsFromParquet:
 
     def test_load_valid_parquet(self, tmp_path: Path) -> None:
         """Load events from a valid parquet file."""
-        table = pa.table({
-            "event_id": [1, 2, 3],
-            "received_at": ["2024-01-15T10:30:00Z", "2024-01-15T10:30:01Z", "2024-01-15T10:30:02Z"],
-            "source_type": ["TIME_AND_SALE", "TIME_AND_SALE", "QUOTE"],
-            "symbol": ["SPY", "SPY", "SPY"],
-            "last_trade_price": ["100.50", "101.00", None],
-            "last_trade_size": [100, 200, None],
-            "last_trade_type": ["regular", "regular", None],
-            "bid_price": [None, None, "100.00"],
-            "ask_price": [None, None, "101.00"],
-            "event_time_ms": [1705314600000, 1705314601000, 1705314602000],
-        })
+        table = pa.table(
+            {
+                "event_id": [1, 2, 3],
+                "received_at": ["2024-01-15T10:30:00Z", "2024-01-15T10:30:01Z", "2024-01-15T10:30:02Z"],
+                "source_type": ["TIME_AND_SALE", "TIME_AND_SALE", "QUOTE"],
+                "symbol": ["SPY", "SPY", "SPY"],
+                "last_trade_price": ["100.50", "101.00", None],
+                "last_trade_size": [100, 200, None],
+                "last_trade_type": ["regular", "regular", None],
+                "bid_price": [None, None, "100.00"],
+                "ask_price": [None, None, "101.00"],
+                "event_time_ms": [1705314600000, 1705314601000, 1705314602000],
+            }
+        )
         parquet_path = tmp_path / "events.parquet"
         pq.write_table(table, str(parquet_path))
 
@@ -54,12 +56,14 @@ class TestLoadEventsFromParquet:
         assert events == []
 
     def test_events_sorted_by_timestamp(self, tmp_path: Path) -> None:
-        table = pa.table({
-            "event_id": [3, 1, 2],
-            "symbol": ["SPY", "SPY", "SPY"],
-            "source_type": ["TIME_AND_SALE", "TIME_AND_SALE", "TIME_AND_SALE"],
-            "event_time_ms": [1705314602000, 1705314600000, 1705314601000],
-        })
+        table = pa.table(
+            {
+                "event_id": [3, 1, 2],
+                "symbol": ["SPY", "SPY", "SPY"],
+                "source_type": ["TIME_AND_SALE", "TIME_AND_SALE", "TIME_AND_SALE"],
+                "event_time_ms": [1705314602000, 1705314600000, 1705314601000],
+            }
+        )
         parquet_path = tmp_path / "events.parquet"
         pq.write_table(table, str(parquet_path))
         events = load_events_from_parquet(parquet_path)
@@ -69,13 +73,15 @@ class TestLoadEventsFromParquet:
 
     def test_load_partial_columns(self, tmp_path: Path) -> None:
         """Load should handle parquet missing some columns gracefully."""
-        table = pa.table({
-            "event_id": [1],
-            "symbol": ["TEST"],
-            "source_type": ["TIME_AND_SALE"],
-            "last_trade_price": ["100.00"],
-            "last_trade_size": [100],
-        })
+        table = pa.table(
+            {
+                "event_id": [1],
+                "symbol": ["TEST"],
+                "source_type": ["TIME_AND_SALE"],
+                "last_trade_price": ["100.00"],
+                "last_trade_size": [100],
+            }
+        )
         parquet_path = tmp_path / "events.parquet"
         pq.write_table(table, str(parquet_path))
         events = load_events_from_parquet(parquet_path)
@@ -84,14 +90,17 @@ class TestLoadEventsFromParquet:
 
     def test_decimal_conversion(self, tmp_path: Path) -> None:
         from decimal import Decimal
-        table = pa.table({
-            "event_id": [1],
-            "symbol": ["TEST"],
-            "source_type": ["QUOTE"],
-            "bid_price": ["100.00"],
-            "ask_price": ["101.00"],
-            "event_time_ms": [1705314600000],
-        })
+
+        table = pa.table(
+            {
+                "event_id": [1],
+                "symbol": ["TEST"],
+                "source_type": ["QUOTE"],
+                "bid_price": ["100.00"],
+                "ask_price": ["101.00"],
+                "event_time_ms": [1705314600000],
+            }
+        )
         parquet_path = tmp_path / "events.parquet"
         pq.write_table(table, str(parquet_path))
         events = load_events_from_parquet(parquet_path)
@@ -134,16 +143,18 @@ class TestReplayDatePartition:
     async def test_replay_with_events(self, tmp_path: Path) -> None:
         """Replay should process events and return summary."""
         # Create a parquet file with TAS events
-        table = pa.table({
-            "event_id": [1, 2, 3],
-            "symbol": ["SPY", "SPY", "SPY"],
-            "source_type": ["QUOTE", "TIME_AND_SALE", "TIME_AND_SALE"],
-            "bid_price": ["100.00", None, None],
-            "ask_price": ["101.00", None, None],
-            "last_trade_price": [None, "100.50", "100.75"],
-            "last_trade_size": [None, 100, 200],
-            "event_time_ms": [1705314600000, 1705314601000, 1705314602000],
-        })
+        table = pa.table(
+            {
+                "event_id": [1, 2, 3],
+                "symbol": ["SPY", "SPY", "SPY"],
+                "source_type": ["QUOTE", "TIME_AND_SALE", "TIME_AND_SALE"],
+                "bid_price": ["100.00", None, None],
+                "ask_price": ["101.00", None, None],
+                "last_trade_price": [None, "100.50", "100.75"],
+                "last_trade_size": [None, 100, 200],
+                "event_time_ms": [1705314600000, 1705314601000, 1705314602000],
+            }
+        )
         parquet_path = tmp_path / "events_v1_test.parquet"
         pq.write_table(table, str(parquet_path))
 

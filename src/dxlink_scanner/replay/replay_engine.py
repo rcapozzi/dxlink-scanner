@@ -66,6 +66,7 @@ def load_events_from_parquet(parquet_path: str | Path) -> list[ConsolidatedEvent
     events: list[ConsolidatedEvent] = []
     column_names_set = set(column_names)
     for i in range(table.num_rows):
+
         def get_val(col_name: str, idx: int, default=None):
             if col_name not in column_names_set:
                 return default
@@ -227,13 +228,15 @@ async def replay_events(
             )
             alert = rule_engine.process(tas_event)
             if alert:
-                alerts.append({
-                    "symbol": alert.symbol,
-                    "rule_name": alert.rule_name,
-                    "severity": alert.severity,
-                    "decision_threshold": alert.decision_threshold,
-                    "size": alert.size,
-                })
+                alerts.append(
+                    {
+                        "symbol": alert.symbol,
+                        "rule_name": alert.rule_name,
+                        "severity": alert.severity,
+                        "decision_threshold": alert.decision_threshold,
+                        "size": alert.size,
+                    }
+                )
 
     return {
         "events_processed": events_processed,
@@ -294,7 +297,9 @@ async def replay_date_partition(
     store = SnapshotStore(stream_config, persist=False)
     stats_mgr = RollingStatsManager(detection)
     rules = CELRuleEngine(
-        detection, watchlist, stats_mgr,
+        detection,
+        watchlist,
+        stats_mgr,
         snapshot_store=store,
         bayesian_models=models["bayesian_models"],
         hawkes_models=models["hawkes_models"],
@@ -321,8 +326,7 @@ def main() -> None:
     parser.add_argument("--date", type=str, default=None, help="Specific date (YYYY-MM-DD)")
     parser.add_argument("--all", action="store_true", help="Replay all date partitions")
     parser.add_argument("--output", type=Path, default=None, help="Output JSON report path")
-    parser.add_argument("--log-level", type=str, default="INFO",
-                        choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+    parser.add_argument("--log-level", type=str, default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     args = parser.parse_args()
 
     logging.basicConfig(

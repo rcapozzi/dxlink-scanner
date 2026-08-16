@@ -15,20 +15,20 @@ from zoneinfo import ZoneInfo
 # Default bin edges: every 15 minutes from 7:00 ET to 21:00 ET
 # Covers pre-market (7-9:30), RTH (9:30-16), after-hours (16-21)
 _DEFAULT_BIN_EDGES: list[int] = [
-    7 * 60,    # 07:00
+    7 * 60,  # 07:00
     9 * 60 + 30,  # 09:30 (RTH open)
-    10 * 60,   # 10:00
-    11 * 60,   # 11:00
-    12 * 60,   # 12:00
-    13 * 60,   # 13:00
-    14 * 60,   # 14:00
-    15 * 60,   # 15:00
-    16 * 60,   # 16:00 (RTH close)
-    17 * 60,   # 17:00
-    18 * 60,   # 18:00
-    19 * 60,   # 19:00
-    20 * 60,   # 20:00
-    21 * 60,   # 21:00
+    10 * 60,  # 10:00
+    11 * 60,  # 11:00
+    12 * 60,  # 12:00
+    13 * 60,  # 13:00
+    14 * 60,  # 14:00
+    15 * 60,  # 15:00
+    16 * 60,  # 16:00 (RTH close)
+    17 * 60,  # 17:00
+    18 * 60,  # 18:00
+    19 * 60,  # 19:00
+    20 * 60,  # 20:00
+    21 * 60,  # 21:00
 ]
 _ET_TZ = ZoneInfo("America/New_York")
 
@@ -74,8 +74,7 @@ class TimeOfDayAggregator:
         # Per-bin statistics (rolling window of recent days)
         # Each bin stores a deque of (date, count, sum, sum_sq) tuples
         self._bin_stats: dict[int, collections.deque] = {
-            edge: collections.deque(maxlen=window_days)
-            for edge in self.bin_edges
+            edge: collections.deque(maxlen=window_days) for edge in self.bin_edges
         }
         # Global stats
         self._global_sum: float = 0.0
@@ -85,9 +84,7 @@ class TimeOfDayAggregator:
         """Get the bin index for an ET minute value."""
         return _find_bin(et_minute_val, self.bin_edges)
 
-    def add_observation(
-        self, timestamp: dt.datetime, value: float
-    ) -> None:
+    def add_observation(self, timestamp: dt.datetime, value: float) -> None:
         """Add a single volume/price observation to the appropriate time bin."""
         et_min = _et_minute(timestamp)
         bin_idx = self._get_bin_index(et_min)
@@ -234,10 +231,7 @@ class TimeOfDayAggregator:
             "bin_edges": self.bin_edges,
             "window_days": self.window_days,
             "min_observations_per_bin": self.min_observations_per_bin,
-            "bin_stats": {
-                str(edge): list(stats_deque)
-                for edge, stats_deque in self._bin_stats.items()
-            },
+            "bin_stats": {str(edge): list(stats_deque) for edge, stats_deque in self._bin_stats.items()},
             "global_sum": self._global_sum,
             "global_count": self._global_count,
         }
@@ -262,9 +256,6 @@ class TimeOfDayAggregator:
 
     def clear(self) -> None:
         """Reset all bin statistics."""
-        self._bin_stats = {
-            edge: collections.deque(maxlen=self.window_days)
-            for edge in self.bin_edges
-        }
+        self._bin_stats = {edge: collections.deque(maxlen=self.window_days) for edge in self.bin_edges}
         self._global_sum = 0.0
         self._global_count = 0

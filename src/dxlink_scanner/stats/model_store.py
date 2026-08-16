@@ -243,7 +243,10 @@ def prior_elicitation(
                         defaults["beta"] = float(beta)
                         logger.info(
                             "Prior elicitation: alpha=%.4f, beta=%.4f (mean=%.4f, var=%.4f)",
-                            alpha, beta, mean_count, var_count,
+                            alpha,
+                            beta,
+                            mean_count,
+                            var_count,
                         )
     except Exception as e:
         logger.warning("Prior elicitation failed: %s; using defaults", e)
@@ -285,10 +288,7 @@ class CalibrationDiagnostics:
         pit_vals: list[float] = []
         for obs in observed_counts:
             # PIT = P(X <= obs) under the posterior predictive (Negative Binomial)
-            cdf_val = sum(
-                model.predictive_prob(k, exposure)
-                for k in range(obs + 1)
-            )
+            cdf_val = sum(model.predictive_prob(k, exposure) for k in range(obs + 1))
             # Clamp to [0, 1] to handle numerical edge cases
             cdf_val = max(0.0, min(1.0, cdf_val))
             pit_vals.append(cdf_val)
@@ -311,13 +311,13 @@ class CalibrationDiagnostics:
             ``n_observations``, ``n_in_interval``.
         """
         if not observed_counts:
-            return {"coverage_rate": 0.0, "ci_low": 0.0, "ci_high": 0.0,
-                    "n_observations": 0, "n_in_interval": 0}
+            return {"coverage_rate": 0.0, "ci_low": 0.0, "ci_high": 0.0, "n_observations": 0, "n_in_interval": 0}
 
         ci_low_rate, ci_high_rate = model.credible_interval(confidence)
         # Use Poisson approximation for count CI bounds
         expected = model.posterior_mean() * exposure
         from scipy.stats import poisson as _pois
+
         count_low = _pois.ppf((1 - confidence) / 2, expected) if expected > 0 else 0
         count_high = _pois.ppf((1 + confidence) / 2, expected) if expected > 0 else 0
 
@@ -469,11 +469,14 @@ class CalibrationDiagnostics:
 
         return {
             "bayesian_log_pred_lik": float(statistics.mean(b for b in bayesian_ll if not np.isnan(b)))
-            if bayesian_ll else 0.0,
+            if bayesian_ll
+            else 0.0,
             "hawkes_log_pred_lik": float(statistics.mean(h for h in hawkes_ll if not np.isnan(h)))
-            if hawkes_ll else 0.0,
+            if hawkes_ll
+            else 0.0,
             "naive_poisson_log_pred_lik": float(statistics.mean(n for n in naive_ll if not np.isnan(n)))
-            if naive_ll else 0.0,
+            if naive_ll
+            else 0.0,
         }
 
     def run_all(
@@ -562,6 +565,7 @@ def bayesian_decision(
     alt_rate = pred_mean * 2.0
 
     from scipy.stats import poisson as _pois
+
     try:
         likelihood_null = float(_pois.pmf(observed, null_rate))
         likelihood_alt = float(_pois.pmf(observed, alt_rate))
@@ -639,14 +643,10 @@ def hierarchical_fdr(
         groups.setdefault(str(label), []).append(i)
 
     group_min_p = {g: min(p_values[i] for i in idxs) for g, idxs in groups.items()}
-    group_rejected = false_discovery_rate_control(
-        list(group_min_p.values()), alpha
-    )
+    group_rejected = false_discovery_rate_control(list(group_min_p.values()), alpha)
 
     result = [False] * n
-    rejected_groups = {
-        g for g, rej in zip(group_min_p.keys(), group_rejected, strict=True) if rej
-    }
+    rejected_groups = {g for g, rej in zip(group_min_p.keys(), group_rejected, strict=True) if rej}
 
     for g in rejected_groups:
         member_pvals = [p_values[i] for i in groups[g]]
@@ -703,4 +703,3 @@ class VolatilityTargeter:
         ratio = self.vol_target / current_vol
         adjusted = int(base_window * ratio)
         return max(10, min(adjusted, 1000))
-

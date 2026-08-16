@@ -95,6 +95,7 @@ class TestComputeLeadLag:
     def test_positive_correlation(self) -> None:
         """When A leads B, correlation should be positive at the correct lag."""
         from dxlink_scanner.stats import CrossAssetFlowState
+
         fa = CrossAssetFlowState(symbol="A")
         fb = CrossAssetFlowState(symbol="B")
         # A leads B: A has varying volume, B mirrors at lag 1

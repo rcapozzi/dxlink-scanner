@@ -77,9 +77,7 @@ class TestModelSerialization:
         assert restored.global_beta == 2.0
         assert "SPY" in restored.symbol_posteriors
         assert "QQQ" in restored.symbol_posteriors
-        assert restored_mean(restored, "SPY") == pytest.approx(
-            pool.symbol_posteriors["SPY"].posterior_mean()
-        )
+        assert restored_mean(restored, "SPY") == pytest.approx(pool.symbol_posteriors["SPY"].posterior_mean())
 
     def test_volume_at_price_round_trip(self) -> None:
         vap = VolumeAtPrice(tick_size=0.01)

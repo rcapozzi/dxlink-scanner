@@ -151,8 +151,10 @@ class CELRuleEngine:
             """Online FDR: reject if p-value < adjusted threshold."""
             _fdr_state["num_tests"] += 1
             threshold = online_fdr_threshold(
-                fdr_alpha, _fdr_state["num_rejections"],
-                _fdr_state["num_tests"], lag=fdr_lag,
+                fdr_alpha,
+                _fdr_state["num_rejections"],
+                _fdr_state["num_tests"],
+                lag=fdr_lag,
             )
             if pval <= threshold:
                 _fdr_state["num_rejections"] += 1
@@ -357,11 +359,13 @@ class CELRuleEngine:
 
             # Decision-theoretic: p-value and Bayes factor for this trade
             from dxlink_scanner.stats import bayesian_anomaly_score
+
             anomaly_metrics = bayesian_anomaly_score(event.size, bayesian, exposure=1.0)
             config_data["bayesian_p_value"] = anomaly_metrics["p_value"]
             config_data["bayes_factor"] = anomaly_metrics["bayes_factor"]
             config_data["bayesian_decision"] = bayesian_decision(
-                bayesian, event.size,
+                bayesian,
+                event.size,
                 cost_fp=self._config.cost_false_positive,
                 cost_fn=self._config.cost_false_negative,
             )
@@ -393,8 +397,7 @@ class CELRuleEngine:
         if regime_detector:
             regime_state = regime_detector.detect()
             config_data["vol_ratio"] = (
-                regime_state.volatility / self._config.vol_target
-                if self._config.vol_target > 0 else 1.0
+                regime_state.volatility / self._config.vol_target if self._config.vol_target > 0 else 1.0
             )
             config_data["vol_targeted_threshold"] = vol_targeter.adjusted_threshold(
                 regime_state.volatility,
@@ -571,9 +574,9 @@ class CELRuleEngine:
                         if self._snapshot_store is not None:
                             snap = self._snapshot_store.get(event.symbol)
                             if snap is not None and snap.underlying_symbol:
-                                    under_snap = self._snapshot_store.get(snap.underlying_symbol)
-                                    if under_snap is not None and under_snap.mid_price is not None:
-                                        underlying_price = float(under_snap.mid_price)
+                                under_snap = self._snapshot_store.get(snap.underlying_symbol)
+                                if under_snap is not None and under_snap.mid_price is not None:
+                                    underlying_price = float(under_snap.mid_price)
                         return Alert(
                             symbol=event.symbol,
                             price=event.price,

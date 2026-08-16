@@ -33,7 +33,7 @@ class TestVectorizedBayesianUpdater:
         updater = VectorizedBayesianUpdater(symbols=["SPY"])
         updater.batch_update({"SPY": [1, 1, 1]})
         assert updater.alpha_post_array[0] == 4.0  # 1 + 3
-        assert updater.beta_post_array[0] == 4.0   # 1 + 3
+        assert updater.beta_post_array[0] == 4.0  # 1 + 3
 
     def test_sync_to_models(self) -> None:
         updater = VectorizedBayesianUpdater(symbols=["SPY", "QQQ"])
@@ -105,7 +105,7 @@ class TestVectorizedHawkesUpdater:
         assert len(arr) == 2
         assert arr[0] > updater.mu  # SPY has 2 events
         assert arr[1] > updater.mu  # QQQ has 1 event
-        assert arr[0] > arr[1]      # SPY has more excitation
+        assert arr[0] > arr[1]  # SPY has more excitation
 
     def test_sync_to_models(self) -> None:
         updater = VectorizedHawkesUpdater(symbols=["SPY"])

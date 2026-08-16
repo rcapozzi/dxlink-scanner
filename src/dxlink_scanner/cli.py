@@ -132,9 +132,14 @@ async def _consume_consolidated(
         # Periodic checkpoint if model store is configured
         if model_store and model_sets:
             model_store.maybe_checkpoint(
-                _compile_model_sets(model_sets, bayesian_models, hawkes_models,
-                                    seasonality_models, cross_symbol_pool,
-                                    regime_detectors or {})
+                _compile_model_sets(
+                    model_sets,
+                    bayesian_models,
+                    hawkes_models,
+                    seasonality_models,
+                    cross_symbol_pool,
+                    regime_detectors or {},
+                )
             )
 
         # Only TAS events go to rule engine + sinks
@@ -250,9 +255,9 @@ async def _on_event(
 
 @app.command()
 def main(
-    config_path: Annotated[Path, typer.Option(
-        "--config", "-c", help="Path to config file"
-    )] = Path("dxlink-scanner.yaml"),
+    config_path: Annotated[Path, typer.Option("--config", "-c", help="Path to config file")] = Path(
+        "dxlink-scanner.yaml"
+    ),
     verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Enable debug logging")] = False,
     debug_messages: Annotated[
         bool,
@@ -322,14 +327,14 @@ async def _run_scanner(
     thresholds_path = Path(thresholds_file) if thresholds_file else None
     if thresholds_path and thresholds_path.exists():
         import json as _json
+
         try:
             raw = _json.loads(thresholds_path.read_text())
-            significance_thresholds = raw.get(
-                "symbols", raw.get("default", {})
-            )
+            significance_thresholds = raw.get("symbols", raw.get("default", {}))
             logger.info(
                 "Loaded %d significance threshold symbols from %s",
-                len(significance_thresholds), thresholds_path,
+                len(significance_thresholds),
+                thresholds_path,
             )
         except Exception as e:
             logger.warning("Failed to load significance thresholds: %s", e)
@@ -425,9 +430,7 @@ async def _run_scanner(
     # Initialize statistical models for enhanced analysis
     data_dir = Path(config.outputs.data_dir)
     models_path = (
-        Path(config.outputs.models_state_file)
-        if config.outputs.models_state_file
-        else data_dir / "models_meta.json"
+        Path(config.outputs.models_state_file) if config.outputs.models_state_file else data_dir / "models_meta.json"
     )
     model_store = ModelStore(data_dir=data_dir, checkpoint_interval_sec=600.0)
     model_store._models_path = models_path
@@ -554,7 +557,7 @@ async def _run_scanner(
             await streamer.subscribe(DXTheoPrice, all_symbols)
         logger.info(
             "Subscribed to Quote(%s) + TimeAndSale(%d) + TheoPrice(%d) symbols",
-            ','.join(underlying_symbols),
+            ",".join(underlying_symbols),
             len(underlying_symbols) + len(all_symbols),
             len(all_symbols),
         )
@@ -572,8 +575,13 @@ async def _run_scanner(
 
         consumer = asyncio.create_task(
             _consume_consolidated(
-                queue, store, rules, sinks,
-                bayesian_models, hawkes_models, seasonality_models,
+                queue,
+                store,
+                rules,
+                sinks,
+                bayesian_models,
+                hawkes_models,
+                seasonality_models,
                 cross_symbol_pool=cross_symbol_pool,
                 regime_detectors=regime_detectors,
                 volume_at_price_models=vap_models,
@@ -676,8 +684,11 @@ async def _run_scanner(
 
         # Save model state for next warm start
         checkpoint_models = _compile_model_sets(
-            model_sets, bayesian_models, hawkes_models,
-            seasonality_models, cross_symbol_pool,
+            model_sets,
+            bayesian_models,
+            hawkes_models,
+            seasonality_models,
+            cross_symbol_pool,
             regime_detectors or {},
         )
         model_store.save(checkpoint_models)
