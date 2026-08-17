@@ -15,9 +15,6 @@ watchlist:
     - name: "p95_delta_weighted"
       expression: "trade.is_option && trade.delta_weighted_size >= config.p95_delta_weighted_size"
       severity: "high"
-    - name: "anomaly_detector"
-      expression: "trade.size > 10 && trade.size > stats.median * 2.0"
-      severity: "high"
     - name: "toxic_flow"
       expression: "stats.vpin > config.vpin_threshold && trade.delta_weighted_size > config.p95_delta_weighted_size"
       severity: "high"
@@ -35,9 +32,6 @@ watchlist:
         - name: "huge_option_print"
           expression: "trade.is_option && trade.size >= 90 && trade.price > .25"
           severity: "high"
-        - name: "large_option_print"
-          expression: "trade.is_option && trade.size >= 50 && trade.price > .25"
-          severity: "medium"
         - name: "p95_delta_weighted_spy"
           expression: "trade.is_option && trade.delta_weighted_size >= config.p95_delta_weighted_size"
           severity: "high"
@@ -91,6 +85,31 @@ detection:
     crash:
       p95_size: 500
       p95_delta_weighted_size: 1000000
+  # Dynamic thresholds: expressions reference statistical model outputs
+  # computed at runtime. Falls back to static p95_size when models unavailable.
+  dynamic_thresholds:
+    p95_size:
+      expression: "bayesian_mean * 10"
+      regime_adjustment:
+        low_vol: 0.8
+        normal: 1.0
+        high_vol: 1.5
+        crash: 2.0
+      vol_target: true
+    p95_delta_weighted_size:
+      expression: "bayesian_mean * 1000"
+      regime_adjustment:
+        low_vol: 0.8
+        normal: 1.0
+        high_vol: 1.5
+        crash: 2.0
+    vpin_threshold:
+      expression: "0.5 + rolling_std / 10"
+      regime_adjustment:
+        low_vol: 0.9
+        normal: 1.0
+        high_vol: 1.2
+        crash: 1.5
 
 outputs:
   stdout: true

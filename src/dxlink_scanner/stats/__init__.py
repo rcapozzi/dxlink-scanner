@@ -1,6 +1,12 @@
 """Rolling statistics management package."""
 
 from dxlink_scanner.models import RollingStats
+from dxlink_scanner.stats.dynamic_thresholds import (
+    AdaptiveTuner,
+    DynamicThresholdManager,
+    ThresholdExpression,
+    build_stats_context,
+)
 from dxlink_scanner.stats.microstructure import (
     CrossAssetFlowState,
     CrossAssetHawkes,
@@ -73,4 +79,8 @@ __all__ = [
     "compute_lead_lag",
     "VectorizedBayesianUpdater",
     "VectorizedHawkesUpdater",
+    "AdaptiveTuner",
+    "DynamicThresholdManager",
+    "ThresholdExpression",
+    "build_stats_context",
 ]

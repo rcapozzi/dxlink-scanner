@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
 import yaml
 from pydantic import BaseModel, Field
@@ -114,6 +115,13 @@ class DetectionConfig(BaseModel):
     vpin_bucket_volume: int = Field(default=1000, ge=1)
     # Regime-conditioned P95 thresholds (overrides base significance thresholds)
     p95_by_regime: dict[str, dict[str, float]] | None = None
+    # Expression-based dynamic thresholds referencing statistical model outputs
+    dynamic_thresholds: dict[str, dict[str, Any]] | None = Field(
+        default=None,
+        description="Expression-based threshold definitions referencing model stats. "
+        "Keys are threshold names, values are dicts with 'expression' (e.g. 'bayesian_mean * 5'), "
+        "'regime_adjustment' (multipliers per regime), 'vol_target' (bool to apply vol targeting).",
+    )
 
 
 class WebhookConfig(BaseModel):

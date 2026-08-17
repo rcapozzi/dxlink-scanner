@@ -55,7 +55,7 @@ config.bayesian_pooled_ci_high
 
 **Acceptance**: Scanner restarts with models reflecting full history; sparse symbols (< 50 obs) use pooled estimates.
 
-**Implementation**: `src/dxlink_scanner/stats/model_store.py` — `ModelStore`, `ModelSet`, `prior_elicitation()`, `bayesian_decision()`, `online_fdr_threshold()`, `hierarchical_fdr()`. Tests: `tests/test_model_store.py` (76 tests). CEL wiring in `src/dxlink_scanner/cli.py` + `src/dxlink_scanner/rules/cel_engine.py`.
+**Implementation**: `src/dxlink_scanner/stats/model_store.py` — `ModelStore`, `ModelSet`, `prior_elicitation()`, `bayesian_decision()`, `online_fdr_threshold()`, `hierarchical_fdr()`, `CalibrationDiagnostics`. Tests: `tests/test_model_store.py` (76 tests). CEL wiring in `src/dxlink_scanner/cli.py` + `src/dxlink_scanner/rules/cel_engine.py`. Dynamic thresholds: `src/dxlink_scanner/stats/dynamic_thresholds.py` — `DynamicThresholdManager`, `AdaptiveTuner`, `ThresholdExpression`.
 
 ---
 
@@ -116,7 +116,7 @@ hierarchical_fdr(symbol_pvals) -> bool
 
 | Task | Description | Deliverable |
 |------|-------------|-------------|
-| 4.1 | **Regime-conditioned thresholds** — P95 thresholds computed separately per regime (low_vol, normal, high_vol, crash) | `significance_thresholds.json` now has `regime_thresholds` |
+| 4.1 | **Regime-conditioned thresholds** — P95 thresholds computed separately per regime (low_vol, normal, high_vol, crash) | `p95_by_regime` in `DetectionConfig` + `production.yaml` |
 | 4.2 | **Real-time regime probability** — `RegimeDetector` outputs `P(regime=r)`; used to blend thresholds | `config.regime_prob` in CEL |
 | 4.3 | **Adaptive window sizing** — RollingStatsV2 window expands in low-vol, contracts in high-vol (volatility-scaled) | `VolatilityTargeter.effective_window()` |
 | 4.4 | **Volatility targeting** — Alert thresholds scale with realized vol: `threshold = base * (vol_target / current_vol)` | `config.vol_targeted_threshold` |
@@ -127,12 +127,14 @@ hierarchical_fdr(symbol_pvals) -> bool
 config.regime_prob             // {0: 0.1, 1: 0.7, 2: 0.2, 3: 0.0}
 config.p95_by_regime         // {0: 50, 1: 100, 2: 200, 3: 500}
 config.regime                  // 0=low_vol, 1=normal, 2=high_vol, 3=crash
-stats.vol_ratio              // current_vol / target_vol
+config.vol_ratio              // current_vol / target_vol
 ```
 
 **Acceptance**: In high-vol regime, alert rate per true anomaly increases; false alerts don't explode.
 
 **Implementation**: `RegimeDetector` initialized per-symbol with `vol_low`/`vol_high`/`vol_crash` from `DetectionConfig`; wired into `CELRuleEngine` via `regime_detectors` parameter; `detect()` called in `_build_activation` to expose `config.regime`, `config.regime_prob`, `config.regime_volatility`, `config.regime_volume_rate`, `config.vol_ratio`, `config.vol_targeted_threshold` in CEL; regime-conditioned P95 thresholds applied via `config.p95_by_regime` YAML mapping (low_vol/normal/high_vol/crash); `VolatilityTargeter` class in `model_store.py` provides `adjusted_threshold()` and `effective_window()` for volatility-targeted thresholds and adaptive window sizing; `is_regime_shift` Alert field for regime transition alerts; config fields `vol_low`, `vol_high`, `vol_crash`, `vol_target`, `p95_by_regime` added to `DetectionConfig` and `production.yaml`. Tests in `tests/test_model_store.py` (76 tests total, including `TestDecisionFunctions`, `TestHierarchicalFDR`, `TestVolatilityTargeter`, `TestRegimeDetector`).
+
+**Dynamic Thresholds**: `detection.dynamic_thresholds` in `production.yaml` supports expression-based thresholds that reference statistical model outputs at runtime (e.g. `p95_size: {expression: "bayesian_mean * 10", regime_adjustment: {high_vol: 1.5}, vol_target: true}`). Evaluated by `DynamicThresholdManager` in `_build_activation()` after model outputs are computed, overriding static significance thresholds. `AdaptiveTuner` provides feedback-loop tuning: adjusts `size_mult`, `vpin_threshold`, `fdr_alpha` based on realized FDR/TPR and persists to YAML.
 
 ---
 

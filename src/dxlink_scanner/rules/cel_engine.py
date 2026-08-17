@@ -131,6 +131,14 @@ class CELRuleEngine:
         self._compiled: dict[str, list[tuple[CelAlertRule, cel.Expression]]] = {}
         self._compile_all()
 
+        # Dynamic threshold manager
+        self._dtm: DynamicThresholdManager | None = None
+        if config.dynamic_thresholds is not None:
+            from dxlink_scanner.stats.dynamic_thresholds import DynamicThresholdManager
+
+            self._dtm = DynamicThresholdManager(config)
+            self._dtm.register_dynamic_thresholds(config.dynamic_thresholds)
+
     def _cel_env(self) -> cel.Env:
         """Create a CEL environment with variable declarations and custom functions."""
         # Decision-theoretic CEL functions
@@ -480,6 +488,10 @@ class CELRuleEngine:
             config_data["systemic_score"] = self._cross_asset_hawkes.systemic_anomaly_score()
             config_data["cross_asset_vpin"] = flow.vpin.vpin if flow else 0.5
 
+        # Dynamic threshold overrides (expression-based, computed from stats)
+        dynamic = self._compute_dynamic_thresholds(symbol, config_data)
+        config_data.update(dynamic)
+
         activation: dict[str, Any] = {
             "trade": trade_data,
             "stats": stats_data,
@@ -494,6 +506,35 @@ class CELRuleEngine:
         self._last_config = config_data
 
         return activation
+
+    def _compute_dynamic_thresholds(self, symbol: str, config_data: dict[str, Any]) -> dict[str, float]:
+        """Compute expression-based dynamic thresholds from current stats context.
+
+        Uses DynamicThresholdManager to evaluate threshold expressions
+        referencing statistical model outputs (e.g. 'bayesian_mean * 5').
+        Returns empty dict if no dynamic thresholds are configured.
+        """
+        if self._dtm is None:
+            return {}
+
+        # Build regime/volatility context from config_data
+        regime = {0: "low_vol", 1: "normal", 2: "high_vol", 3: "crash"}.get(config_data.get("regime", 1), "normal")
+
+        vol_ratio = config_data.get("vol_ratio")
+        volatility = config_data.get("regime_volatility")
+
+        # Build stats context from config_data (which already has model outputs)
+        stats_context = {
+            k: float(v) for k, v in config_data.items() if isinstance(v, (int, float)) and not isinstance(v, bool)
+        }
+
+        return self._dtm.compute_thresholds(
+            symbol,
+            rolling_stats=stats_context,
+            regime=regime,
+            vol_ratio=vol_ratio,
+            volatility=volatility,
+        )
 
     def _resolve_underlying(self, symbol: str) -> str | None:
         """Resolve an option streamer symbol to its underlying symbol.
