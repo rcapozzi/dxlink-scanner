@@ -184,8 +184,7 @@ class ChainLoader:
 
         Returns:
             Tuple of (UnderlyingInfo, list of StrikeInfo for the filtered
-            expiration). Strikes are NOT sorted by distance from ATM —
-            use :meth:`select_atm_strikes` for that.
+            expiration). Returns ALL strikes for the expiration — no ATM filtering.
         """
         if not chains:
             return UnderlyingInfo(symbol="", streamer_symbol=""), []
@@ -246,30 +245,3 @@ class ChainLoader:
             return UnderlyingInfo(symbol="", streamer_symbol=""), []
 
         return underlying_info, strikes
-
-    @staticmethod
-    def select_atm_strikes(
-        strikes: list[StrikeInfo],
-        underlying_price: Decimal,
-        count: int,
-    ) -> list[StrikeInfo]:
-        """Select the ``count`` strikes closest to the underlying price.
-
-        Sorts strikes by absolute distance from ``underlying_price`` and
-        returns the first ``count`` entries. This selects strikes around
-        ATM (at-the-money), approximately ``count // 2`` on each side.
-
-        Args:
-            strikes: List of StrikeInfo from parse_chain.
-            underlying_price: Current underlying price (last/mark).
-            count: Maximum number of strikes to return.
-
-        Returns:
-            Up to ``count`` StrikeInfo objects nearest to the underlying price.
-        """
-        # Sort by absolute distance from the underlying price
-        sorted_strikes = sorted(
-            strikes,
-            key=lambda s: abs(s.strike - underlying_price),
-        )
-        return sorted_strikes[:count]

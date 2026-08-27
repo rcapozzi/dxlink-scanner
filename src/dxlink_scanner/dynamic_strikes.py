@@ -72,12 +72,8 @@ class DynamicStrikeManager:
         )
 
         price_symbol = underlying_info.symbol or ticker.symbol
-        underlying_price = await self._loader.get_underlying_price(price_symbol, ticker.option_type)
-        if underlying_price is None or not strikes:
-            symbols = [s.symbol for s in strikes[: min(len(strikes), ticker.strikes_around_atm)]]
-        else:
-            symbols_info = self._loader.select_atm_strikes(strikes, underlying_price, ticker.strikes_around_atm)
-            symbols = [s.symbol for s in symbols_info]
+        # Use all 0DTE strikes — no ATM filtering
+        symbols = [s.symbol for s in strikes]
         return ticker.symbol, symbols, price_symbol
 
     async def initial_scan(self) -> StrikeDelta:

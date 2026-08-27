@@ -39,7 +39,6 @@ class TickerConfig(BaseModel):
     Attributes:
         symbol: Underlying symbol (e.g. "SPY").
         option_type: "equity" for stock/ETF options, "futures" for index/futures options (e.g. SPX).
-        strikes_around_atm: Number of strikes around ATM to subscribe to.
         expiration_filter: "0DTE" for same-day expiry only, "all" for all expirations.
         alert_rules: List of CEL-based alert rules for this symbol.
             These match the exact streamer symbol (including option symbols).
@@ -52,7 +51,6 @@ class TickerConfig(BaseModel):
 
     symbol: str
     option_type: str = Field(default="equity", pattern=r"^(equity|futures)$")
-    strikes_around_atm: int = Field(default=10, ge=1, le=50)
     expiration_filter: str = Field(default="0DTE", pattern=r"^(0DTE|all)$")
     alert_rules: list[CelAlertRule] = Field(default_factory=list)
     underlying_alert_rules: list[CelAlertRule] = Field(default_factory=list)

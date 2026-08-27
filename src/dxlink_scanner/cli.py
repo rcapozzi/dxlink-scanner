@@ -368,20 +368,17 @@ async def _run_scanner(
             price_symbol = underlying_info.symbol
         else:
             price_symbol = ticker.symbol
-        # Fetch underlying price for ATM-based strike selection
+        # Fetch underlying price (for logging/debugging; no longer used for strike selection)
         underlying_price = await loader.get_underlying_price(price_symbol, ticker.option_type)
         if underlying_price is None:
             logger.warning(
-                "Could not resolve underlying price for %s; using first %d strikes",
+                "Could not resolve underlying price for %s; using all %d strikes",
                 ticker.symbol,
-                ticker.strikes_around_atm,
+                len(strikes),
             )
-            count = min(len(strikes), ticker.strikes_around_atm)
-            symbols = [s.symbol for s in strikes[:count]]
-        else:
-            symbols_info = ChainLoader.select_atm_strikes(strikes, underlying_price, ticker.strikes_around_atm)
-            symbols = [s.symbol for s in symbols_info]
-            count = len(symbols_info)
+        # Use all 0DTE strikes — no ATM filtering
+        symbols = [s.symbol for s in strikes]
+        count = len(strikes)
         all_symbols.extend(symbols)
 
         # Determine the streamer symbol for Quote subscription

@@ -28,7 +28,6 @@ watchlist:
   tickers:
     - symbol: "SPY"
       option_type: "equity"
-      strikes_around_atm: 10
       alert_rules:
         - name: "large_option_print"
           expression: "trade.size >= 100 && trade.price > 1.0"
@@ -268,7 +267,6 @@ watchlist:
   tickers:
     - symbol: "SPY"
       option_type: "equity"
-      strikes_around_atm: 10
       underlying_alert_rules:
         - name: "spy_any_option_sweep"
           expression: "trade.is_option && trade.size >= 50 && trade.price > 1.0"

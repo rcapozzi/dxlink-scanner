@@ -71,7 +71,6 @@ watchlist:
   tickers:
     - symbol: "SPY"
       option_type: "equity"
-      strikes_around_atm: 20
       expiration_filter: "0DTE"
       underlying_alert_rules:
         - name: "spy_huge_option_print"
@@ -95,7 +94,6 @@ watchlist:
 
     - symbol: "SPX"
       option_type: "equity"
-      strikes_around_atm: 20
       expiration_filter: "0DTE"
       underlying_alert_rules:
         - name: "spx_large_print"
@@ -123,7 +121,6 @@ watchlist:
 
     - symbol: "/ES"
       option_type: "futures"
-      strikes_around_atm: 25
       expiration_filter: "0DTE"
       underlying_alert_rules:
         - name: "large_option_print"

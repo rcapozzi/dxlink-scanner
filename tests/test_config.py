@@ -30,7 +30,6 @@ def test_load_config(tmp_path: Path):
             "tickers": [
                 {
                     "symbol": "SPY",
-                    "strikes_around_atm": 10,
                     "expiration_filter": "0DTE",
                     "underlying_alert_rules": [
                         {
@@ -42,7 +41,6 @@ def test_load_config(tmp_path: Path):
                 },
                 {
                     "symbol": "QQQ",
-                    "strikes_around_atm": 15,
                     "expiration_filter": "all",
                     "underlying_alert_rules": [
                         {"name": "qqq_sweep", "expression": "trade.size >= 50", "severity": "medium"},
@@ -50,13 +48,11 @@ def test_load_config(tmp_path: Path):
                 },
                 {
                     "symbol": "IWM",
-                    "strikes_around_atm": 20,
                     "expiration_filter": "all",
                 },
                 {
                     "symbol": "SPX",
                     "option_type": "equity",
-                    "strikes_around_atm": 10,
                     "underlying_alert_rules": [
                         {"name": "spx_large", "expression": "trade.size >= 50", "severity": "high"},
                     ],
@@ -87,7 +83,6 @@ def test_load_config(tmp_path: Path):
     assert config.watchlist.tickers[0].symbol == "SPY"
     assert config.watchlist.tickers[1].symbol == "QQQ"
     assert config.watchlist.tickers[2].symbol == "IWM"
-    assert config.watchlist.tickers[1].strikes_around_atm == 15
     assert config.watchlist.tickers[1].expiration_filter == "all"
     assert len(config.watchlist.tickers[0].underlying_alert_rules) == 1
     assert config.watchlist.tickers[0].underlying_alert_rules[0].name == "spy_large_print"
@@ -110,7 +105,6 @@ def test_default_config():
     )
     assert len(config.watchlist.tickers) == 1
     assert config.watchlist.tickers[0].symbol == "SPY"
-    assert config.watchlist.tickers[0].strikes_around_atm == 10
     assert config.watchlist.tickers[0].expiration_filter == "0DTE"
     assert config.watchlist.tickers[0].option_type == "equity"
     assert config.watchlist.tickers[0].underlying_alert_rules == []
@@ -137,27 +131,25 @@ def test_multiple_underlyings():
     """Test that multiple underlyings are supported."""
     config = WatchlistConfig(
         tickers=[
-            TickerConfig(symbol="SPY", strikes_around_atm=5),
-            TickerConfig(symbol="QQQ", strikes_around_atm=20, expiration_filter="all"),
-            TickerConfig(symbol="IWM", strikes_around_atm=15),
+            TickerConfig(symbol="SPY"),
+            TickerConfig(symbol="QQQ", expiration_filter="all"),
+            TickerConfig(symbol="IWM"),
         ]
     )
     assert len(config.tickers) == 3
     assert config.symbols == ["SPY", "QQQ", "IWM"]
-    assert config.tickers[0].strikes_around_atm == 5
-    assert config.tickers[1].strikes_around_atm == 20
     assert config.tickers[1].expiration_filter == "all"
 
 
 def test_option_type_futures():
     """Test that option_type 'futures' is accepted."""
-    ticker = TickerConfig(symbol="SPX", option_type="futures", strikes_around_atm=10)
+    ticker = TickerConfig(symbol="SPX", option_type="futures")
     assert ticker.option_type == "futures"
 
 
 def test_option_type_equity():
     """Test that option_type 'equity' is accepted."""
-    ticker = TickerConfig(symbol="SPY", option_type="equity", strikes_around_atm=10)
+    ticker = TickerConfig(symbol="SPY", option_type="equity")
     assert ticker.option_type == "equity"
 
 

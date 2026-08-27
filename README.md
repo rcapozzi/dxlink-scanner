@@ -5,7 +5,7 @@ Multi-ticker options volume scanner using Tastytrade DXLink streaming, powered b
 ## Features
 
 - **Multi-ticker support**: Watch SPY, QQQ, IWM, SPX, ES, NQ, and more in a single instance
-- **ATM strike selection**: Subscribe to N strikes around ATM for 0DTE options
+- **Full 0DTE chain subscription**: Subscribe to all 0DTE strikes per underlying
 - **CEL rule engine**: Define alert rules as CEL expressions in YAML config — per-symbol, per-underlying, and default fallback tiers
 - **Per-underlying scoping**: Define one rule that applies to ALL option strikes of an underlying (e.g., SPY calls, SPX puts)
 - **Equity and futures options**: Supports both stock/ETF options (SPY, QQQ) and futures options (ES, NQ)
@@ -46,7 +46,6 @@ watchlist:
   tickers:
     - symbol: "SPX"
       option_type: "equity"
-      strikes_around_atm: 20
       expiration_filter: "0DTE"
       underlying_alert_rules:
         - name: "large_spx_print"
@@ -55,7 +54,6 @@ watchlist:
 
     - symbol: "/ES"
       option_type: "futures"
-      strikes_around_atm: 10
       expiration_filter: "0DTE"
       underlying_alert_rules:
         - name: "large_es_print"

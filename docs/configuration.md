@@ -62,7 +62,6 @@ watchlist:
   tickers:
     - symbol: "SPY"
       option_type: "equity"
-      strikes_around_atm: 10
       expiration_filter: "0DTE"
       alert_rules: []  # CEL rules (optional)
       underlying_alert_rules: []  # CEL rules for all options of this underlying (optional)
@@ -74,7 +73,6 @@ watchlist:
 |-------|------|----------|---------|-------------|
 | `symbol` | string | ✅ | — | Underlying symbol (SPY, QQQ, SPX, ES, etc.) |
 | `option_type` | string | ❌ | `"equity"` | `"equity"` for stock/ETF options, `"futures"` for index/futures options |
-| `strikes_around_atm` | integer | ❌ | `10` | Number of strikes around ATM to subscribe (1-50) |
 | `expiration_filter` | string | ❌ | `"0DTE"` | `"0DTE"` for same-day expiry only, `"all"` for all expirations |
 | `alert_rules` | list | ❌ | `[]` | CEL-based alert rules (see [CEL Rules](cel_rules.md)) |
 | `underlying_alert_rules` | list | ❌ | `[]` | CEL rules that apply to ALL option symbols of this underlying |
@@ -210,7 +208,6 @@ watchlist:
   tickers:
     - symbol: "SPY"
       option_type: "equity"
-      strikes_around_atm: 10
       expiration_filter: "0DTE"
       underlying_alert_rules:
         - name: "large_spy_call"
@@ -219,7 +216,6 @@ watchlist:
 
     - symbol: "SPX"
       option_type: "equity"
-      strikes_around_atm: 20
       expiration_filter: "0DTE"
       underlying_alert_rules:
         - name: "large_spx_put"
@@ -228,7 +224,6 @@ watchlist:
 
     - symbol: "ES"
       option_type: "futures"
-      strikes_around_atm: 15
       expiration_filter: "0DTE"
       underlying_alert_rules:
         - name: "large_es_option"
@@ -272,7 +267,6 @@ tastytrade:
 watchlist:
   tickers:
     - symbol: "SPY"
-      strikes_around_atm: 3
       underlying_alert_rules:
         - name: "debug_print"
           expression: "trade.size >= 10"
@@ -305,7 +299,6 @@ The config is validated by Pydantic on load. Common validation errors:
 |-------|-------|-----|
 | `Field required` | Missing required field (e.g., `client_id`) | Add field or set env var |
 | `Input should be greater than 0` | `size_mult` ≤ 0 or `abs_min_size` < 1 | Use positive values |
-| `Input should be less than or equal to 50` | `strikes_around_atm` > 50 | Reduce to ≤ 50 |
 | `Value error, Invalid option_type` | `option_type` not `"equity"` or `"futures"` | Use valid value |
 | `Environment variable not found` | `${VAR}` not set in environment | Export the variable |
 
