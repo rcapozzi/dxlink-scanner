@@ -634,6 +634,7 @@ class CELRuleEngine:
                             is_regime_shift=False,  # Set True when regime transition rules match
                             vpin=self._last_config.get("vpin"),
                             trade_side=self._last_config.get("trade_side"),
+                            bayesian_decision=self._last_config.get("bayesian_decision"),
                         )
                 except Exception as e:
                     logger.warning(

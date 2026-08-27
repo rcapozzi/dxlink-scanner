@@ -3,7 +3,9 @@
 from dxlink_scanner.models import RollingStats
 from dxlink_scanner.stats.dynamic_thresholds import (
     AdaptiveTuner,
+    ConfigPersister,
     DynamicThresholdManager,
+    RuntimeThresholds,
     ThresholdExpression,
     build_stats_context,
 )
@@ -80,6 +82,8 @@ __all__ = [
     "VectorizedBayesianUpdater",
     "VectorizedHawkesUpdater",
     "AdaptiveTuner",
+    "ConfigPersister",
+    "RuntimeThresholds",
     "DynamicThresholdManager",
     "ThresholdExpression",
     "build_stats_context",

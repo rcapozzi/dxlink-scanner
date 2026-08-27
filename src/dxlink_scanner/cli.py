@@ -32,6 +32,7 @@ from dxlink_scanner.rules import CELRuleEngine
 from dxlink_scanner.sinks import StdoutSink, WebhookSink
 from dxlink_scanner.snapshot_store import SnapshotStore
 from dxlink_scanner.stats import (
+    AdaptiveTuner,
     BayesianGammaPoisson,
     CrossAssetHawkes,
     CrossSymbolPool,
@@ -123,6 +124,7 @@ async def _consume_consolidated(
     cross_asset_hawkes: CrossAssetHawkes | None = None,
     model_store: ModelStore | None = None,
     model_sets: dict[str, ModelSet] | None = None,
+    adaptive_tuner: AdaptiveTuner | None = None,
 ) -> None:
     """Consumer: process events from the unified queue."""
     while True:
@@ -189,6 +191,10 @@ async def _consume_consolidated(
                 trade_time = event.last_trade_time / 1000.0 if event.last_trade_time else 0.0
                 cross_asset_hawkes.add_event(underlying, trade_time)
 
+            # Record event for adaptive tuner
+            if adaptive_tuner:
+                adaptive_tuner.record_event(underlying)
+
             tas_event = TimeAndSaleEvent(
                 symbol=event.symbol,
                 price=event.last_trade_price or Decimal("0"),
@@ -206,6 +212,9 @@ async def _consume_consolidated(
             )
             alert = rules.process(tas_event)
             if alert:
+                # Record alert outcome for adaptive tuner
+                if adaptive_tuner:
+                    adaptive_tuner.record_alert(alert.bayesian_decision or False, underlying)
                 for sink in sinks:
                     await sink.send(alert)
         queue.task_done()
@@ -457,7 +466,7 @@ async def _run_scanner(
     model_sets: dict[str, ModelSet] = {}
 
     # Initialize VAP models with tick size from config
-    tick_size = getattr(config.stream, "tick_size", None) or 0.01  # type: ignore[attr-defined]
+    tick_size = getattr(config.stream, "tick_size", None) or 0.01
 
     # Create models for each ticker's underlying and a default
     all_underlyings = list(underlying_symbols_set)
@@ -563,6 +572,13 @@ async def _run_scanner(
         )
         logger.info("Listening for volume anomalies...")
 
+        # Adaptive tuning feedback loop using new AdaptiveTuner API
+        adaptive_tuner = AdaptiveTuner(
+            config.detection,
+            config_path=config.outputs.models_state_file,
+        )
+        asyncio.create_task(adaptive_tuner.run_loop(interval_sec=300))
+
         # Unified consumer: three producers → bounded queue → single consumer
         queue: asyncio.Queue[ConsolidatedEvent] = asyncio.Queue(maxsize=config.stream.backpressure_queue_size)
         counter = [0]  # shared event counter
@@ -589,6 +605,7 @@ async def _run_scanner(
                 cross_asset_hawkes=cross_asset_hawkes,
                 model_store=model_store,
                 model_sets=model_sets,
+                adaptive_tuner=adaptive_tuner,
             )
         )
 
@@ -651,14 +668,24 @@ async def _run_scanner(
 
         # Periodic stats logging task
         async def _stats_logger() -> None:
-            """Log throughput stats every 5 seconds."""
+            """Log throughput stats every 30 seconds."""
             last_count = 0
+            last_alerts = 0
             while True:
                 await asyncio.sleep(30)
                 current_count = counter[0]
-                delta = current_count - last_count
-                logger.info("Stats: %d events in last 30s (total=%d, queue=%d)", delta, current_count, queue.qsize())
+                event_delta = current_count - last_count
+                current_alerts = adaptive_tuner._metrics.get("default", {}).get("alerts", 0)
+                alert_delta = current_alerts - last_alerts
+                logger.info(
+                    "Stats: %d events in last 30s (total=%d, queue=%d), alerts=%d",
+                    event_delta,
+                    current_count,
+                    queue.qsize(),
+                    alert_delta,
+                )
                 last_count = current_count
+                last_alerts = current_alerts
 
         stats_task = asyncio.create_task(_stats_logger())
 

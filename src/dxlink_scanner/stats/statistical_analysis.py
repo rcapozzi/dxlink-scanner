@@ -593,7 +593,9 @@ def bayesian_anomaly_score(
 
     # Likelihood ratio
     if null_rate > 0 and alt_rate > 0:
-        bf = scipy_stats.poisson.pmf(observed, alt_rate) / scipy_stats.poisson.pmf(observed, null_rate)
+        null_pmf = scipy_stats.poisson.pmf(observed, null_rate)
+        alt_pmf = scipy_stats.poisson.pmf(observed, alt_rate)
+        bf = alt_pmf / null_pmf if null_pmf > 0 else alt_pmf if alt_pmf > 0 else float("inf")
     else:
         bf = 1.0
 

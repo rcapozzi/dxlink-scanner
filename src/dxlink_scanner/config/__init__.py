@@ -169,6 +169,7 @@ class StreamConfig(BaseModel):
     backpressure_queue_size: int = Field(default=500, gt=0, le=100000)
     flush_interval_sec: float = Field(default=5.0, gt=0)
     flush_batch_size: int = Field(default=10000, gt=0, le=1000000)
+    tick_size: float = Field(default=0.01, gt=0)
 
 
 class ScannerConfig(BaseModel):

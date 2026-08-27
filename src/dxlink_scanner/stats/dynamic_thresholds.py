@@ -6,13 +6,20 @@ Classes:
     ThresholdExpression — lightweight expression evaluator for threshold values
     DynamicThresholdManager — computes thresholds at runtime from model stats
     AdaptiveTuner — tunes thresholds based on realized FDR and alert quality
+    ConfigPersister — validates and persists config changes with locking
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
+import threading
+from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+import yaml
 
 from dxlink_scanner.config import DetectionConfig
 
@@ -260,12 +267,92 @@ class DynamicThresholdManager:
         return float(getattr(self._config, name, 0.0))
 
 
+@dataclass(slots=True)
+class RuntimeThresholds:
+    """Runtime-adjusted threshold values (decoupled from Pydantic config)."""
+
+    size_mult: float
+    vpin_threshold: float
+    fdr_alpha: float
+
+    def to_dict(self) -> dict[str, float]:
+        return {
+            "size_mult": self.size_mult,
+            "vpin_threshold": self.vpin_threshold,
+            "fdr_alpha": self.fdr_alpha,
+        }
+
+
+class ConfigPersister:
+    """Thread-safe config persistence with validation."""
+
+    def __init__(self, config_path: str) -> None:
+        self._path = Path(config_path)
+        self._lock = threading.Lock()
+
+    def persist_thresholds(
+        self,
+        runtime_thresholds: dict[str, RuntimeThresholds],
+        detection_config: DetectionConfig,
+    ) -> bool:
+        """Atomically persist adjusted thresholds to YAML after validation.
+
+        Returns True if persisted, False if no changes or error.
+        """
+        with self._lock:
+            if not self._path.exists():
+                return False
+
+            with open(self._path) as f:
+                raw = yaml.safe_load(f)
+
+            if not raw or not isinstance(raw.get("detection"), dict):
+                return False
+
+            changed = False
+            for symbol, thresholds in runtime_thresholds.items():
+                key = "detection" if symbol == "default" else f"detection_{symbol}"
+                if key not in raw:
+                    raw[key] = {}
+                if thresholds.size_mult != raw[key].get("size_mult"):
+                    raw[key]["size_mult"] = round(thresholds.size_mult, 4)
+                    changed = True
+                if thresholds.vpin_threshold != raw[key].get("vpin_threshold"):
+                    raw[key]["vpin_threshold"] = round(thresholds.vpin_threshold, 4)
+                    changed = True
+                if thresholds.fdr_alpha != raw[key].get("fdr_alpha"):
+                    raw[key]["fdr_alpha"] = round(thresholds.fdr_alpha, 4)
+                    changed = True
+
+            if not changed:
+                return False
+
+            # Validate by re-loading through Pydantic
+            from dxlink_scanner.config import ScannerConfig
+            try:
+                ScannerConfig.model_validate(raw)
+            except Exception as e:
+                logger.error("Config validation failed, not persisting: %s", e)
+                return False
+
+            # Atomic write
+            tmp_path = self._path.with_suffix(".tmp")
+            with open(tmp_path, "w") as f:
+                yaml.dump(raw, f, default_flow_style=False, sort_keys=False)
+            tmp_path.replace(self._path)
+
+            logger.info("Persisted adaptive threshold adjustments to %s", self._path)
+            return True
+
+
 class AdaptiveTuner:
     """Tunes thresholds based on realized alert quality metrics.
 
     Implements a feedback loop: if FDR is too high, increase thresholds;
     if detection rate is too low, decrease thresholds. Adjustments are
     persisted to config files for learning across restarts.
+
+    Supports per-symbol tuning with regime-aware context.
     """
 
     def __init__(
@@ -273,59 +360,123 @@ class AdaptiveTuner:
         config: DetectionConfig,
         config_path: str | None = None,
         target_fdr: float = 0.05,
+        target_tpr: float = 0.7,
         adjustment_rate: float = 0.1,
     ) -> None:
         self._config = config
         self._config_path = config_path
         self._target_fdr = target_fdr
+        self._target_tpr = target_tpr
         self._adjustment_rate = adjustment_rate
-        self._size_mult = float(config.size_mult)
-        self._vpin_threshold = float(config.vpin_threshold)
-        self._fdr_alpha = float(config.fdr_alpha)
 
-    def record_period(self, tP: int, fP: int, tN: int, fN: int) -> dict[str, float]:
-        """Record results from a monitoring period and compute adjustment factors.
+        # Per-symbol runtime thresholds (default + symbol overrides)
+        self._thresholds: dict[str, RuntimeThresholds] = {
+            "default": RuntimeThresholds(
+                size_mult=float(config.size_mult),
+                vpin_threshold=float(config.vpin_threshold),
+                fdr_alpha=float(config.fdr_alpha),
+            )
+        }
 
-        Args:
-            tP: True positives
-            fP: False positives
-            tN: True negatives
-            fN: False negatives
+        # Per-symbol metrics buffers
+        self._metrics: dict[str, dict[str, int]] = {
+            "default": {"tp": 0, "fp": 0, "alerts": 0, "events": 0}
+        }
 
-        Returns:
-            Dict with computed metrics and adjustment recommendations.
-        """
-        total_positives = tP + fP
-        total_actual = tP + fN
+        self._persister = ConfigPersister(config_path) if config_path else None
 
-        fdr = fP / total_positives if total_positives > 0 else 0.0
-        tpr = tP / total_actual if total_actual > 0 else 0.0
-        fpr = fP / (fP + tN) if (fP + tN) > 0 else 0.0
+    def _get_metrics(self, symbol: str) -> dict[str, int]:
+        if symbol not in self._metrics:
+            self._metrics[symbol] = {"tp": 0, "fp": 0, "alerts": 0, "events": 0}
+        return self._metrics[symbol]
+
+    def _get_thresholds(self, symbol: str) -> RuntimeThresholds:
+        if symbol not in self._thresholds:
+            self._thresholds[symbol] = RuntimeThresholds(
+                size_mult=float(self._config.size_mult),
+                vpin_threshold=float(self._config.vpin_threshold),
+                fdr_alpha=float(self._config.fdr_alpha),
+            )
+        return self._thresholds[symbol]
+
+    def record_event(self, symbol: str = "default") -> None:
+        """Call from consumer per TAS event."""
+        self._get_metrics(symbol)["events"] += 1
+
+    def record_alert(self, is_true_positive: bool, symbol: str = "default") -> None:
+        """Call from CELRuleEngine when an alert fires with known outcome."""
+        m = self._get_metrics(symbol)
+        m["alerts"] += 1
+        if is_true_positive:
+            m["tp"] += 1
+        else:
+            m["fp"] += 1
+
+    def tune(self, symbol: str = "default") -> dict[str, float] | None:
+        """Compute + apply adjustments for a symbol; returns metrics or None if no change."""
+        m = self._get_metrics(symbol)
+        tP, fP = m["tp"], m["fp"]
+        alerts = m["alerts"]
+        events = max(m["events"], 1)
+
+        total_pos = tP + fP
+        fdr = fP / total_pos if total_pos > 0 else 0.0
+        tpr = tP / alerts if alerts > 0 else 0.0
+        fpr = fP / (fP + (events - alerts)) if (fP + (events - alerts)) > 0 else 0.0
+
+        thresholds = self._get_thresholds(symbol)
 
         size_mult_adj = 1.0
         vpin_adj = 1.0
         fdr_alpha_adj = 1.0
+        should_adjust = False
 
         if fdr > self._target_fdr:
             excess = (fdr - self._target_fdr) / self._target_fdr
             size_mult_adj = 1.0 + (self._adjustment_rate * excess)
             vpin_adj = 1.0 + (self._adjustment_rate * excess * 0.5)
             fdr_alpha_adj = max(0.5, 1.0 - (self._adjustment_rate * excess))
+            should_adjust = True
             logger.info(
                 "FDR %.3f > target %.3f -- increasing thresholds (size_mult x%.2f)",
                 fdr,
                 self._target_fdr,
                 size_mult_adj,
             )
-        elif tpr < 0.7:
-            deficit = (0.7 - tpr) / 0.7
+        elif tpr < self._target_tpr:
+            deficit = (self._target_tpr - tpr) / self._target_tpr
             size_mult_adj = max(0.5, 1.0 - (self._adjustment_rate * deficit))
             vpin_adj = max(0.5, 1.0 - (self._adjustment_rate * deficit * 0.5))
+            should_adjust = True
             logger.info(
-                "TPR %.3f < target 0.7 -- decreasing thresholds (size_mult x%.2f)",
+                "TPR %.3f < target %.3f -- decreasing thresholds (size_mult x%.2f)",
                 tpr,
+                self._target_tpr,
                 size_mult_adj,
             )
+
+        if should_adjust:
+            thresholds.size_mult *= size_mult_adj
+            thresholds.vpin_threshold = min(0.95, thresholds.vpin_threshold * vpin_adj)
+            thresholds.fdr_alpha *= fdr_alpha_adj
+
+            logger.info(
+                "Adjusted [%s]: size_mult=%.3f, vpin_threshold=%.3f, fdr_alpha=%.4f",
+                symbol,
+                thresholds.size_mult,
+                thresholds.vpin_threshold,
+                thresholds.fdr_alpha,
+            )
+
+            # Reset metrics for this symbol
+            m["tp"] = 0
+            m["fp"] = 0
+            m["alerts"] = 0
+            m["events"] = 0
+
+            # Persist if configured
+            if self._persister:
+                self._persister.persist_thresholds(self._thresholds, self._config)
 
         return {
             "fdr": fdr,
@@ -334,63 +485,33 @@ class AdaptiveTuner:
             "size_mult_adjustment": size_mult_adj,
             "vpin_adjustment": vpin_adj,
             "fdr_alpha_adjustment": fdr_alpha_adj,
-            "should_adjust": size_mult_adj != 1.0 or vpin_adj != 1.0,
+            "should_adjust": should_adjust,
         }
 
-    def apply_adjustments(self, metrics: dict[str, float]) -> None:
-        """Apply adjustment factors to the config and persist."""
-        if not metrics.get("should_adjust", False):
-            return
-
-        self._size_mult *= metrics["size_mult_adjustment"]
-        self._vpin_threshold = min(0.95, self._vpin_threshold * metrics["vpin_adjustment"])
-        self._fdr_alpha *= metrics["fdr_alpha_adjustment"]
-
-        self._config.size_mult = self._size_mult
-        self._config.vpin_threshold = self._vpin_threshold
-        self._config.fdr_alpha = self._fdr_alpha
-
-        logger.info(
-            "Adjusted: size_mult=%.3f, vpin_threshold=%.3f, fdr_alpha=%.4f",
-            self._size_mult,
-            self._vpin_threshold,
-            self._fdr_alpha,
-        )
-
-        if self._config_path:
-            self._persist()
-
-    def _persist(self) -> None:
-        """Persist adjusted thresholds back to the YAML config file."""
-        import yaml
-
-        if not self._config_path:
-            return
-
-        path = __import__("pathlib").Path(self._config_path)
-        if not path.exists():
-            return
-
-        with open(path) as f:
-            raw = yaml.safe_load(f)
-
-        if raw and isinstance(raw.get("detection"), dict):
-            raw["detection"]["size_mult"] = round(self._size_mult, 4)
-            raw["detection"]["vpin_threshold"] = round(self._vpin_threshold, 4)
-            raw["detection"]["fdr_alpha"] = round(self._fdr_alpha, 4)
-
-            with open(path, "w") as f:
-                yaml.dump(raw, f, default_flow_style=False, sort_keys=False)
-
-            logger.info("Persisted adaptive threshold adjustments to %s", path)
+    def get_thresholds(self, symbol: str = "default") -> RuntimeThresholds:
+        """Get current runtime thresholds for a symbol."""
+        return self._get_thresholds(symbol)
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "size_mult": self._size_mult,
-            "vpin_threshold": self._vpin_threshold,
-            "fdr_alpha": self._fdr_alpha,
+            "thresholds": {k: v.to_dict() for k, v in self._thresholds.items()},
             "target_fdr": self._target_fdr,
+            "target_tpr": self._target_tpr,
         }
+
+    async def run_loop(self, interval_sec: float = 300) -> None:
+        """Background task that periodically tunes all symbols."""
+        while True:
+            await asyncio.sleep(interval_sec)
+            for symbol in list(self._metrics.keys()):
+                result = self.tune(symbol)
+                if result and result.get("should_adjust"):
+                    logger.info(
+                        "Adaptive tuning [%s]: fdr=%.3f tpr=%.3f",
+                        symbol,
+                        result["fdr"],
+                        result["tpr"],
+                    )
 
 
 def build_stats_context(

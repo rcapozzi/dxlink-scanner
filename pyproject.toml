@@ -34,7 +34,7 @@ target-version = "py311"
 select = ["E", "F", "I", "W", "UP", "B", "SIM"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.14"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
@@ -55,6 +55,9 @@ module = [
     "dotenv.*",
     "typer.*",
     "cel_expr_python.*",
+    "pyarrow.*",
+    "pandas.*",
+    "scipy.*",
 ]
 ignore_missing_imports = true
 

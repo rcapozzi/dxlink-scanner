@@ -272,7 +272,10 @@ class Alert:
         bayes_factor: Bayes factor comparing anomaly vs typical (for audit trail).
         p_value: Tail probability under posterior predictive (for audit trail).
         alert_utility: Cost-weighted utility of this alert (TP×benefit - FP×cost).
-        decision_threshold: The threshold used for the alert decision (for audit trail).
+        decision_threshold: The threshold value used for the alert decision (for audit trail).
+        bayesian_decision: Whether the bayesian decision rule triggered (True/False).
+        vpin: VPIN value at alert time.
+        trade_side: Classified trade side ("buy", "sell", "unknown").
     """
 
     symbol: str
@@ -288,6 +291,7 @@ class Alert:
     p_value: float | None = None
     alert_utility: float | None = None
     decision_threshold: float | None = None
+    bayesian_decision: bool | None = None  # Bayesian decision outcome (True/False)
     vpin: float | None = None
     trade_side: str | None = None
 
