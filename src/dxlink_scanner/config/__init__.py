@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
 import yaml
 from pydantic import BaseModel, Field
@@ -96,6 +97,31 @@ class DetectionConfig(BaseModel):
     # V2 options
     stats_half_life_sec: float | None = Field(default=None, gt=0)
     stats_session_aware: bool = False
+    # Decision-theoretic alerting
+    cost_false_positive: float = Field(default=1.0, gt=0)
+    cost_false_negative: float = Field(default=10.0, gt=0)
+    cost_missed_regime_shift: float = Field(default=50.0, gt=0)
+    # Online FDR
+    fdr_alpha: float = Field(default=0.05, gt=0, le=1)
+    fdr_lag: int = Field(default=0, ge=0)
+    # Regime-aware thresholds
+    vol_low: float = Field(default=0.01, gt=0)
+    vol_high: float = Field(default=0.03, gt=0)
+    vol_crash: float = Field(default=0.05, gt=0)
+    vol_target: float = Field(default=0.02, gt=0)
+    # Microstructure toxicity thresholds
+    vpin_threshold: float = Field(default=0.6, gt=0, le=1)
+    vpin_window_buckets: int = Field(default=265, ge=1)
+    vpin_bucket_volume: int = Field(default=1000, ge=1)
+    # Regime-conditioned P95 thresholds (overrides base significance thresholds)
+    p95_by_regime: dict[str, dict[str, float]] | None = None
+    # Expression-based dynamic thresholds referencing statistical model outputs
+    dynamic_thresholds: dict[str, dict[str, Any]] | None = Field(
+        default=None,
+        description="Expression-based threshold definitions referencing model stats. "
+        "Keys are threshold names, values are dicts with 'expression' (e.g. 'bayesian_mean * 5'), "
+        "'regime_adjustment' (multipliers per regime), 'vol_target' (bool to apply vol targeting).",
+    )
 
 
 class WebhookConfig(BaseModel):
@@ -124,6 +150,10 @@ class OutputsConfig(BaseModel):
         default=None,
         description="Path to significance_thresholds.json (from compact_parquet.py).",
     )
+    models_state_file: str | None = Field(
+        default=None,
+        description="Path to models_meta.json for model state persistence (read/written by ModelStore).",
+    )
 
 
 class LoggingConfig(BaseModel):
@@ -139,6 +169,7 @@ class StreamConfig(BaseModel):
     backpressure_queue_size: int = Field(default=500, gt=0, le=100000)
     flush_interval_sec: float = Field(default=5.0, gt=0)
     flush_batch_size: int = Field(default=10000, gt=0, le=1000000)
+    tick_size: float = Field(default=0.01, gt=0)
 
 
 class ScannerConfig(BaseModel):

@@ -33,8 +33,11 @@ def test_load_config(tmp_path: Path):
                     "strikes_around_atm": 10,
                     "expiration_filter": "0DTE",
                     "underlying_alert_rules": [
-                        {"name": "spy_large_print", "expression": "trade.is_option && trade.size >= 100",
-                        "severity": "high"},
+                        {
+                            "name": "spy_large_print",
+                            "expression": "trade.is_option && trade.size >= 100",
+                            "severity": "high",
+                        },
                     ],
                 },
                 {
@@ -42,8 +45,7 @@ def test_load_config(tmp_path: Path):
                     "strikes_around_atm": 15,
                     "expiration_filter": "all",
                     "underlying_alert_rules": [
-                        {"name": "qqq_sweep", "expression": "trade.size >= 50",
-                        "severity": "medium"},
+                        {"name": "qqq_sweep", "expression": "trade.size >= 50", "severity": "medium"},
                     ],
                 },
                 {

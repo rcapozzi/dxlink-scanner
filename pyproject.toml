@@ -14,6 +14,7 @@ dependencies = [
     "typer>=0.9",
     "pyarrow>=15.0",
     "cel-expr-python>=0.1",
+    "scipy>=1.17.1",
 ]
 
 [dependency-groups]
@@ -33,7 +34,7 @@ target-version = "py311"
 select = ["E", "F", "I", "W", "UP", "B", "SIM"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.14"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
@@ -54,6 +55,9 @@ module = [
     "dotenv.*",
     "typer.*",
     "cel_expr_python.*",
+    "pyarrow.*",
+    "pandas.*",
+    "scipy.*",
 ]
 ignore_missing_imports = true
 

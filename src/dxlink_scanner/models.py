@@ -77,6 +77,22 @@ class ConsolidatedSnapshot:
     spread: Decimal | None = None
     spread_bps: float | None = None
     trade_vs_mid: Decimal | None = None
+
+    # Microstructure: VAP profile fields (from FlowMetrics/VolumeAtPrice)
+    vap_poc: Decimal | None = None
+    vap_val_area_low: Decimal | None = None
+    vap_val_area_high: Decimal | None = None
+    vap_imbalance: float | None = None
+
+    # Microstructure: liquidity metrics (from LiquidityMetrics)
+    spread_p50: float | None = None
+    spread_p95: float | None = None
+    depth_at_poc_median: float | None = None
+
+    # Microstructure: toxicity metrics (from VPINCalculator)
+    vpin: float | None = None
+    trade_side: str | None = None  # "buy", "sell", "unknown"
+
     evict_at: int | None = None
 
 
@@ -238,7 +254,7 @@ class OptionRow:
     open_interest: int | None = None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class Alert:
     """Represents a triggered alert from the rule engine.
 
@@ -251,6 +267,15 @@ class Alert:
         severity: Alert severity level (info, low, medium, high, critical).
         underlying_price: Most recent underlying price at trigger time,
             derived from Quote mid_price (bid+ask)/2 on the underlying.
+        is_regime_shift: True if this alert was triggered by a regime transition.
+        posterior_mean: Bayesian posterior mean at alert time (for audit trail).
+        bayes_factor: Bayes factor comparing anomaly vs typical (for audit trail).
+        p_value: Tail probability under posterior predictive (for audit trail).
+        alert_utility: Cost-weighted utility of this alert (TP×benefit - FP×cost).
+        decision_threshold: The threshold value used for the alert decision (for audit trail).
+        bayesian_decision: Whether the bayesian decision rule triggered (True/False).
+        vpin: VPIN value at alert time.
+        trade_side: Classified trade side ("buy", "sell", "unknown").
     """
 
     symbol: str
@@ -260,6 +285,15 @@ class Alert:
     rule_name: str
     severity: str = "high"
     underlying_price: float | None = None
+    is_regime_shift: bool = False
+    posterior_mean: float | None = None
+    bayes_factor: float | None = None
+    p_value: float | None = None
+    alert_utility: float | None = None
+    decision_threshold: float | None = None
+    bayesian_decision: bool | None = None  # Bayesian decision outcome (True/False)
+    vpin: float | None = None
+    trade_side: str | None = None
 
 
 @dataclass(slots=True)

@@ -31,7 +31,21 @@ from dxlink_scanner.models import (
 from dxlink_scanner.rules import CELRuleEngine
 from dxlink_scanner.sinks import StdoutSink, WebhookSink
 from dxlink_scanner.snapshot_store import SnapshotStore
-from dxlink_scanner.stats import RollingStatsManager
+from dxlink_scanner.stats import (
+    AdaptiveTuner,
+    BayesianGammaPoisson,
+    CrossAssetHawkes,
+    CrossSymbolPool,
+    FlowMetrics,
+    HawkesProcess,
+    ModelSet,
+    ModelStore,
+    RegimeDetector,
+    RollingStatsManager,
+    TimeOfDaySeasonality,
+    VolumeAtPrice,
+    prior_elicitation,
+)
 
 SinkType = StdoutSink | WebhookSink
 RuleEngine = CELRuleEngine
@@ -100,21 +114,91 @@ async def _consume_consolidated(
     store: SnapshotStore,
     rules: RuleEngine,
     sinks: list[SinkType],
+    bayesian_models: dict[str, BayesianGammaPoisson],
+    hawkes_models: dict[str, HawkesProcess],
+    seasonality_models: dict[str, TimeOfDaySeasonality],
+    cross_symbol_pool: CrossSymbolPool | None = None,
+    regime_detectors: dict[str, RegimeDetector] | None = None,
+    volume_at_price_models: dict[str, VolumeAtPrice] | None = None,
+    flow_metrics: dict[str, FlowMetrics] | None = None,
+    cross_asset_hawkes: CrossAssetHawkes | None = None,
+    model_store: ModelStore | None = None,
+    model_sets: dict[str, ModelSet] | None = None,
+    adaptive_tuner: AdaptiveTuner | None = None,
 ) -> None:
     """Consumer: process events from the unified queue."""
     while True:
         event = await queue.get()
         store.ingest(event)
 
+        # Periodic checkpoint if model store is configured
+        if model_store and model_sets:
+            model_store.maybe_checkpoint(
+                _compile_model_sets(
+                    model_sets,
+                    bayesian_models,
+                    hawkes_models,
+                    seasonality_models,
+                    cross_symbol_pool,
+                    regime_detectors or {},
+                )
+            )
+
         # Only TAS events go to rule engine + sinks
         if event.source_type == "TIME_AND_SALE":
             # Enrich TAS event with delta from the latest TheoPrice snapshot
             snap = store.get(event.symbol)
             delta = snap.delta if snap and snap.delta is not None else None
+
+            # Determine underlying for statistical models
+            underlying = snap.underlying_symbol if snap else event.symbol
+            if underlying not in bayesian_models:
+                underlying = "default"
+
+            # Update statistical models with this trade
+            trade_time = dt.datetime.now(dt.UTC).timestamp()
+            size = event.last_trade_size or 0
+
+            # Bayesian Gamma-Poisson (count of trades)
+            bayesian_models[underlying].update(1)  # count of 1 trade
+            # Also update for size (treating size as count in a separate model could work too)
+
+            # Hawkes process (event timing)
+            hawkes_models[underlying].add_event(trade_time)
+
+            # Time-of-day seasonality
+            if event.last_trade_time:
+                trade_dt = dt.datetime.fromtimestamp(event.last_trade_time / 1000, tz=dt.UTC)
+                seasonality_models[underlying].add_observation(trade_dt, float(size))
+
+            # Cross-symbol pooling (share information across underlyings)
+            if cross_symbol_pool is not None:
+                cross_symbol_pool.update_symbol(underlying, 1, exposure=1.0)
+
+            # Volume at Price (VAP) - update with trade price and size
+            vap = volume_at_price_models.get(underlying) if volume_at_price_models else None
+            if vap:
+                trade_price_float = float(event.last_trade_price) if event.last_trade_price else 0.0
+                vap.add_trade(trade_price_float, size)
+
+            # Flow metrics - update VPIN, liquidity, trade classification
+            flow = flow_metrics.get(underlying) if flow_metrics else None
+            if flow and snap:
+                flow.update(snap, float(event.last_trade_price) if event.last_trade_price else 0.0, size)
+
+            # Cross-asset Hawkes - update systemic intensity
+            if cross_asset_hawkes:
+                trade_time = event.last_trade_time / 1000.0 if event.last_trade_time else 0.0
+                cross_asset_hawkes.add_event(underlying, trade_time)
+
+            # Record event for adaptive tuner
+            if adaptive_tuner:
+                adaptive_tuner.record_event(underlying)
+
             tas_event = TimeAndSaleEvent(
                 symbol=event.symbol,
                 price=event.last_trade_price or Decimal("0"),
-                size=event.last_trade_size or 0,
+                size=size,
                 timestamp=(
                     dt.datetime.fromtimestamp(event.last_trade_time / 1000, tz=dt.UTC)
                     if event.last_trade_time
@@ -128,9 +212,31 @@ async def _consume_consolidated(
             )
             alert = rules.process(tas_event)
             if alert:
+                # Record alert outcome for adaptive tuner
+                if adaptive_tuner:
+                    adaptive_tuner.record_alert(alert.bayesian_decision or False, underlying)
                 for sink in sinks:
                     await sink.send(alert)
         queue.task_done()
+
+
+def _compile_model_sets(
+    model_sets: dict[str, ModelSet],
+    bayesian_models: dict[str, BayesianGammaPoisson],
+    hawkes_models: dict[str, HawkesProcess],
+    seasonality_models: dict[str, TimeOfDaySeasonality],
+    cross_symbol_pool: CrossSymbolPool | None = None,
+    regime_detectors: dict[str, RegimeDetector] | None = None,
+) -> dict[str, ModelSet]:
+    """Sync the individual model dicts into ModelSet objects for checkpointing."""
+    for symbol, model_set in model_sets.items():
+        model_set.bayesian = bayesian_models.get(symbol, BayesianGammaPoisson())
+        model_set.hawkes = hawkes_models.get(symbol, HawkesProcess())
+        model_set.seasonality = seasonality_models.get(symbol, TimeOfDaySeasonality())
+        model_set.regime = regime_detectors.get(symbol, RegimeDetector()) if regime_detectors else model_set.regime
+        if cross_symbol_pool:
+            model_set.pool = cross_symbol_pool
+    return model_sets
 
 
 def _get_normalize_fn(event_type: type) -> Callable[..., ConsolidatedEvent]:
@@ -158,9 +264,9 @@ async def _on_event(
 
 @app.command()
 def main(
-    config_path: Annotated[Path, typer.Option(
-        "--config", "-c", help="Path to config file"
-    )] = Path("dxlink-scanner.yaml"),
+    config_path: Annotated[Path, typer.Option("--config", "-c", help="Path to config file")] = Path(
+        "dxlink-scanner.yaml"
+    ),
     verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Enable debug logging")] = False,
     debug_messages: Annotated[
         bool,
@@ -230,14 +336,14 @@ async def _run_scanner(
     thresholds_path = Path(thresholds_file) if thresholds_file else None
     if thresholds_path and thresholds_path.exists():
         import json as _json
+
         try:
             raw = _json.loads(thresholds_path.read_text())
-            significance_thresholds = raw.get(
-                "symbols", raw.get("default", {})
-            )
+            significance_thresholds = raw.get("symbols", raw.get("default", {}))
             logger.info(
                 "Loaded %d significance threshold symbols from %s",
-                len(significance_thresholds), thresholds_path,
+                len(significance_thresholds),
+                thresholds_path,
             )
         except Exception as e:
             logger.warning("Failed to load significance thresholds: %s", e)
@@ -329,6 +435,87 @@ async def _run_scanner(
     # underlying_price via store.get(snap.underlying_symbol).mid_price
     for sym in underlying_symbols:
         store.bootstrap_snapshot(sym, underlying_map.get(sym, sym))
+
+    # Initialize statistical models for enhanced analysis
+    data_dir = Path(config.outputs.data_dir)
+    models_path = (
+        Path(config.outputs.models_state_file) if config.outputs.models_state_file else data_dir / "models_meta.json"
+    )
+    model_store = ModelStore(data_dir=data_dir, checkpoint_interval_sec=600.0)
+    model_store._models_path = models_path
+
+    # Prior elicitation: try to load hyperpriors from parquet history
+    hyperpriors: dict[str, float] | None = None
+    if config.outputs.persist_events and data_dir.exists():
+        try:
+            hyperpriors = prior_elicitation(data_dir, lookback_days=30)
+        except Exception as e:
+            logger.warning("Prior elicitation failed: %s; using defaults", e)
+
+    cross_symbol_pool = CrossSymbolPool(
+        global_alpha=hyperpriors.get("alpha", 1.0) if hyperpriors else 1.0,
+        global_beta=hyperpriors.get("beta", 1.0) if hyperpriors else 1.0,
+    )
+
+    bayesian_models: dict[str, BayesianGammaPoisson] = {}
+    hawkes_models: dict[str, HawkesProcess] = {}
+    seasonality_models: dict[str, TimeOfDaySeasonality] = {}
+    regime_detectors: dict[str, RegimeDetector] = {}
+    vap_models: dict[str, VolumeAtPrice] = {}
+    flow_metrics: dict[str, FlowMetrics] = {}
+    model_sets: dict[str, ModelSet] = {}
+
+    # Initialize VAP models with tick size from config
+    tick_size = getattr(config.stream, "tick_size", None) or 0.01
+
+    # Create models for each ticker's underlying and a default
+    all_underlyings = list(underlying_symbols_set)
+    all_underlyings.append("default")
+
+    # Warm up: load saved model state or initialize from hyperpriors
+    warm_models = model_store.warm_up(all_underlyings, hyperpriors)
+
+    for underlying in all_underlyings:
+        # Initialize VAP and flow metrics for each symbol
+        vap_models[underlying] = VolumeAtPrice(tick_size=tick_size)
+        flow_metrics[underlying] = FlowMetrics(symbol=underlying)
+
+        if underlying in warm_models:
+            ms = warm_models[underlying]
+            bayesian_models[underlying] = ms.bayesian
+            hawkes_models[underlying] = ms.hawkes
+            seasonality_models[underlying] = ms.seasonality
+            regime_detectors[underlying] = RegimeDetector(
+                vol_low=config.detection.vol_low,
+                vol_high=config.detection.vol_high,
+                vol_crash=config.detection.vol_crash,
+            )
+            model_sets[underlying] = ms
+        else:
+            alpha = hyperpriors.get("alpha", 1.0) if hyperpriors else 1.0
+            beta = hyperpriors.get("beta", 1.0) if hyperpriors else 1.0
+            bayesian_models[underlying] = BayesianGammaPoisson(alpha=alpha, beta=beta)
+            hawkes_models[underlying] = HawkesProcess(mu=0.1, alpha=0.5, beta=1.0)
+            seasonality_models[underlying] = TimeOfDaySeasonality()
+            regime_detectors[underlying] = RegimeDetector(
+                vol_low=config.detection.vol_low,
+                vol_high=config.detection.vol_high,
+                vol_crash=config.detection.vol_crash,
+            )
+            model_sets[underlying] = ModelSet(
+                bayesian=bayesian_models[underlying],
+                hawkes=hawkes_models[underlying],
+                seasonality=seasonality_models[underlying],
+                pool=cross_symbol_pool,
+            )
+
+    # Cross-asset Hawkes for systemic flow detection
+    cross_asset_hawkes = CrossAssetHawkes(
+        symbols=all_underlyings,
+        mu=0.1,
+        decay=1.0,
+    )
+
     # CEL-based rule engine: collect per-symbol and default rules from config
     per_symbol_rules: dict[str, list[CelAlertRule]] = {}
     for ticker in config.watchlist.tickers:
@@ -345,6 +532,14 @@ async def _run_scanner(
         underlying_symbol_map=underlying_map,
         snapshot_store=store,
         significance_thresholds=significance_thresholds,
+        bayesian_models=bayesian_models,
+        hawkes_models=hawkes_models,
+        seasonality_models=seasonality_models,
+        cross_symbol_pool=cross_symbol_pool,
+        regime_detectors=regime_detectors,
+        volume_at_price_models=vap_models,
+        flow_metrics=flow_metrics,
+        cross_asset_hawkes=cross_asset_hawkes,
     )
     logger.info("Using CEL rule engine")
     sinks: list[SinkType] = []
@@ -371,11 +566,18 @@ async def _run_scanner(
             await streamer.subscribe(DXTheoPrice, all_symbols)
         logger.info(
             "Subscribed to Quote(%s) + TimeAndSale(%d) + TheoPrice(%d) symbols",
-            ','.join(underlying_symbols),
+            ",".join(underlying_symbols),
             len(underlying_symbols) + len(all_symbols),
             len(all_symbols),
         )
         logger.info("Listening for volume anomalies...")
+
+        # Adaptive tuning feedback loop using new AdaptiveTuner API
+        adaptive_tuner = AdaptiveTuner(
+            config.detection,
+            config_path=config.outputs.models_state_file,
+        )
+        asyncio.create_task(adaptive_tuner.run_loop(interval_sec=300))
 
         # Unified consumer: three producers → bounded queue → single consumer
         queue: asyncio.Queue[ConsolidatedEvent] = asyncio.Queue(maxsize=config.stream.backpressure_queue_size)
@@ -387,7 +589,25 @@ async def _run_scanner(
             t = asyncio.create_task(_produce_events(streamer, event_type, normalize_fn, queue, counter))
             producers.append(t)
 
-        consumer = asyncio.create_task(_consume_consolidated(queue, store, rules, sinks))
+        consumer = asyncio.create_task(
+            _consume_consolidated(
+                queue,
+                store,
+                rules,
+                sinks,
+                bayesian_models,
+                hawkes_models,
+                seasonality_models,
+                cross_symbol_pool=cross_symbol_pool,
+                regime_detectors=regime_detectors,
+                volume_at_price_models=vap_models,
+                flow_metrics=flow_metrics,
+                cross_asset_hawkes=cross_asset_hawkes,
+                model_store=model_store,
+                model_sets=model_sets,
+                adaptive_tuner=adaptive_tuner,
+            )
+        )
 
         # Also start parquet flush loop if persistence enabled
         data_dir = Path(config.outputs.data_dir)
@@ -448,14 +668,24 @@ async def _run_scanner(
 
         # Periodic stats logging task
         async def _stats_logger() -> None:
-            """Log throughput stats every 5 seconds."""
+            """Log throughput stats every 30 seconds."""
             last_count = 0
+            last_alerts = 0
             while True:
                 await asyncio.sleep(30)
                 current_count = counter[0]
-                delta = current_count - last_count
-                logger.info("Stats: %d events in last 30s (total=%d, queue=%d)", delta, current_count, queue.qsize())
+                event_delta = current_count - last_count
+                current_alerts = adaptive_tuner._metrics.get("default", {}).get("alerts", 0)
+                alert_delta = current_alerts - last_alerts
+                logger.info(
+                    "Stats: %d events in last 30s (total=%d, queue=%d), alerts=%d",
+                    event_delta,
+                    current_count,
+                    queue.qsize(),
+                    alert_delta,
+                )
                 last_count = current_count
+                last_alerts = current_alerts
 
         stats_task = asyncio.create_task(_stats_logger())
 
@@ -478,6 +708,17 @@ async def _run_scanner(
         # Flush remaining events to parquet
         if store.persist:
             await store.flush_remaining(data_dir)
+
+        # Save model state for next warm start
+        checkpoint_models = _compile_model_sets(
+            model_sets,
+            bayesian_models,
+            hawkes_models,
+            seasonality_models,
+            cross_symbol_pool,
+            regime_detectors or {},
+        )
+        model_store.save(checkpoint_models)
 
         logger.info("Scanner shutdown complete.")
 

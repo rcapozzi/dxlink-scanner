@@ -209,6 +209,17 @@ def main() -> None:
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
     )
+    parser.add_argument(
+        "--parallel",
+        action="store_true",
+        help="Compact partitions in parallel using multiprocessing",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help="Number of parallel workers (default: CPU count)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -229,16 +240,32 @@ def main() -> None:
     else:
         targets = [data_dir / (dt.date.today() - dt.timedelta(days=1)).isoformat()]
 
-    for partition in targets:
-        if not partition.exists():
-            logger.warning("Partition does not exist: %s", partition)
-            continue
-        if args.dry_run:
-            files = list(partition.glob("events_v*_*.parquet"))
-            logger.info("[DRY RUN] Would compact %d files in %s", len(files), partition)
-        else:
-            n = compact_date_partition(partition)
-            logger.info("Compact %s: %d files written", partition.name, n)
+    if args.parallel and args.all and len(targets) > 1:
+        import multiprocessing
+
+        workers = args.workers or multiprocessing.cpu_count()
+        logger.info("Compacting %d partitions in parallel with %d workers", len(targets), workers)
+        with multiprocessing.Pool(processes=workers) as pool:
+            results = pool.map(_compact_partition_worker, targets)
+        for name, n in results:
+            logger.info("Compact %s: %d files written", name, n)
+    else:
+        for partition in targets:
+            if not partition.exists():
+                logger.warning("Partition does not exist: %s", partition)
+                continue
+            if args.dry_run:
+                files = list(partition.glob("events_v*_*.parquet"))
+                logger.info("[DRY RUN] Would compact %d files in %s", len(files), partition)
+            else:
+                n = compact_date_partition(partition)
+                logger.info("Compact %s: %d files written", partition.name, n)
+
+
+def _compact_partition_worker(partition: Path) -> tuple[str, int]:
+    """Worker function for parallel compaction. Returns (partition_name, files_written)."""
+    n = compact_date_partition(partition)
+    return (partition.name, n)
 
 
 if __name__ == "__main__":

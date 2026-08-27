@@ -34,5 +34,18 @@ schema_v1 = pa.schema(
         ("time_nano_part_ms", pa.int64()),
         # Snapshot lifecycle
         ("evict_at", pa.int64()),
+        # Microstructure fields (v2 schema additions)
+        ("vap_poc", pa.string()),
+        ("vap_val_area_low", pa.string()),
+        ("vap_val_area_high", pa.string()),
+        ("vap_imbalance", pa.float64()),
+        ("spread_p50", pa.float64()),
+        ("spread_p95", pa.float64()),
+        ("depth_at_poc_median", pa.float64()),
+        ("vpin", pa.float64()),
+        ("trade_side", pa.string()),
+        # Cross-asset flow fields (v3 schema additions)
+        ("cross_asset_vpin", pa.float64()),
+        ("systemic_score", pa.float64()),
     ]
 )

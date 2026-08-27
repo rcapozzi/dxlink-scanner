@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from zoneinfo import ZoneInfo
 
 from dxlink_scanner.config import DetectionConfig
+from dxlink_scanner.stats.seasonality import TimeOfDayAggregator
 
 # Constants for modified z-score
 MODIFIED_Z_SCORE_CONSTANT = 0.6745
@@ -57,6 +58,9 @@ class RollingStatsV2:
     _eth_total_weight: float = field(default=0.0, repr=False)
     _eth_mean: float = field(default=0.0, repr=False)
     _eth_M2: float = field(default=0.0, repr=False)
+
+    # Time-of-day seasonality aggregator (optional)
+    _tod_aggregator: TimeOfDayAggregator | None = field(default=None, repr=False)
 
     # --- Sorted List Helpers (static) ---
 
@@ -162,6 +166,10 @@ class RollingStatsV2:
     def add(self, value: int, timestamp: dt.datetime | None = None) -> None:
         """Add a value to the rolling window."""
         now = timestamp or dt.datetime.now(dt.UTC)
+
+        # Time-of-day seasonality tracking
+        if self._tod_aggregator is not None:
+            self._tod_aggregator.add_observation(now, float(value))
 
         # Session-aware: skip main window, maintain only RTH/ETH
         if self.session_aware:
@@ -354,6 +362,40 @@ class RollingStatsV2:
 
     def eth_percentile(self, p: float) -> float:
         return self._s_get_quantile(self._eth_sorted, p)
+
+    # --- Time-of-Day Seasonality Accessors ---
+
+    def seasonality_factor(self, timestamp: dt.datetime | None = None) -> float:
+        """Seasonality factor for this timestamp (>1 = historically busy, <1 = quiet)."""
+        if self._tod_aggregator is None:
+            return 1.0
+        ts = timestamp or dt.datetime.now(dt.UTC)
+        return self._tod_aggregator.seasonality_factor(ts)
+
+    def expected_volume(self, timestamp: dt.datetime | None = None) -> float:
+        """Expected volume for this time based on historical patterns."""
+        if self._tod_aggregator is None:
+            return 0.0
+        ts = timestamp or dt.datetime.now(dt.UTC)
+        return self._tod_aggregator.expected_volume(ts)
+
+    def normalized_volume(self, size: int, timestamp: dt.datetime | None = None) -> float:
+        """Volume normalized by seasonality factor (removes intraday pattern)."""
+        if self._tod_aggregator is None:
+            return float(size)
+        ts = timestamp or dt.datetime.now(dt.UTC)
+        return self._tod_aggregator.normalized_volume(ts, float(size))
+
+    def z_score_seasonal(self, size: int, timestamp: dt.datetime | None = None) -> float:
+        """Z-score after removing seasonality effect."""
+        if self._tod_aggregator is None:
+            return self.z_score(float(size))
+        ts = timestamp or dt.datetime.now(dt.UTC)
+        return self._tod_aggregator.z_score_seasonal(ts, float(size))
+
+    def enable_seasonality(self, aggregator: TimeOfDayAggregator) -> None:
+        """Attach a time-of-day aggregator to this rolling stats instance."""
+        self._tod_aggregator = aggregator
 
     @property
     def count(self) -> int:
