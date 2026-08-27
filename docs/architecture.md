@@ -62,7 +62,7 @@ session = Session(
 
 ### 2. Option Chain Loading (`src/dxlink_scanner/bootstrap.py`)
 
-**Purpose**: Fetch 0DTE option chain for each configured underlying, extract streamer symbols, and optionally filter by delta.
+**Purpose**: Fetch 0DTE option chain for each configured underlying, extract streamer symbols.
 
 ```python
 # Current: Uses SDK instrument functions
@@ -78,13 +78,6 @@ chains = get_future_option_chain(session, "ES")  # dict[date, list[FutureOption]
 today = datetime.now(UTC).date()
 option_symbols = [opt.streamer_symbol for opt in chains.get(today, [])]
 ```
-
-**Delta-Based Filtering** (when `delta_filter: true`):
-1. Subscribe to `TheoPrice` for all 0DTE symbols
-2. Buffer 2-5 seconds for delta values to populate
-3. Filter out symbols where `|delta| < min_delta`
-4. Unsubscribe filtered symbols from TheoPrice
-5. Return only qualifying symbols for Quote/TAS subscription
 
 **Outputs**:
 - `symbol → streamer_symbol` mapping for DXLink subscription

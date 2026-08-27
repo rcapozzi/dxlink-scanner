@@ -25,8 +25,6 @@ watchlist:
     - symbol: "SPY"
       option_type: "equity"
       strikes_around_atm: 20
-      delta_filter: true
-      min_delta: 0.02
       expiration_filter: "0DTE"
       underlying_alert_rules:
         - name: "huge_option_print"
@@ -38,8 +36,6 @@ watchlist:
     - symbol: "SPX"
       option_type: "equity"
       strikes_around_atm: 20
-      delta_filter: true
-      min_delta: 0.02
       expiration_filter: "0DTE"
       underlying_alert_rules:
         - name: "spx_large_print"
