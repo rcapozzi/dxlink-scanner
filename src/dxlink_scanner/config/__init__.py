@@ -158,6 +158,27 @@ class StreamConfig(BaseModel):
     tick_size: float = Field(default=0.01, gt=0)
 
 
+class DXLinkConfig(BaseModel):
+    """DXLink WebSocket configuration for payload chunking."""
+
+    max_payload_bytes: int = Field(
+        default=60_000,
+        ge=10_000,
+        le=64_000,
+        description="Maximum bytes per FEED_SUBSCRIPTION message (DXLink limit is 64k).",
+    )
+    chunk_delay_sec: float = Field(
+        default=0.1,
+        ge=0,
+        le=5.0,
+        description="Delay between sending chunks to avoid rate limiting.",
+    )
+    enable_chunking: bool = Field(
+        default=True,
+        description="Enable automatic payload chunking for subscriptions.",
+    )
+
+
 class ScannerConfig(BaseModel):
     """Top-level scanner configuration."""
 
@@ -167,6 +188,7 @@ class ScannerConfig(BaseModel):
     outputs: OutputsConfig = Field(default_factory=OutputsConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     stream: StreamConfig = Field(default_factory=StreamConfig)
+    dxlink: DXLinkConfig = Field(default_factory=DXLinkConfig)
 
 
 def _resolve_env(value: str) -> str:

@@ -20,6 +20,7 @@ from tastytrade.streamer import DXLinkStreamer
 
 from dxlink_scanner.auth import TastyTradeAuth
 from dxlink_scanner.bootstrap import ChainLoader, InstrumentResolver
+from dxlink_scanner.chunked_streamer import ChunkedDXLinkStreamer
 from dxlink_scanner.config import CelAlertRule, ScannerConfig, load_config
 from dxlink_scanner.dynamic_strikes import DynamicStrikeManager
 from dxlink_scanner.models import (
@@ -195,7 +196,7 @@ def setup_logging(verbose: bool = False) -> None:
 
 
 async def _produce_events(
-    streamer: DXLinkStreamer,
+    streamer: ChunkedDXLinkStreamer,
     event_type: type,
     normalize_fn: Callable[..., ConsolidatedEvent],
     queue: asyncio.Queue[ConsolidatedEvent],
@@ -615,7 +616,13 @@ async def _run_scanner(
             )
         )
 
-    async with DXLinkStreamer(session) as streamer:
+    async with DXLinkStreamer(session) as base_streamer:
+        streamer = ChunkedDXLinkStreamer(
+            base_streamer,
+            max_payload_bytes=config.dxlink.max_payload_bytes,
+            chunk_delay_sec=config.dxlink.chunk_delay_sec,
+            enable_chunking=config.dxlink.enable_chunking,
+        )
         await streamer.subscribe(Quote, underlying_symbols)
         await streamer.subscribe(DXTimeAndSale, underlying_symbols + all_symbols)
         if all_symbols:

@@ -119,6 +119,11 @@ stream:
   flush_interval_sec: 300.0
   flush_batch_size: 1000
 
+dxlink:
+  max_payload_bytes: 60000  # < 64k limit
+  chunk_delay_sec: 0.1      # delay between chunks
+  enable_chunking: true
+
 logging:
   level: "INFO"
   json_format: true
