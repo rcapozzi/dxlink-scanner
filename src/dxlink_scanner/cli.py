@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
+import math
 from collections.abc import Callable
-from decimal import Decimal
+from decimal import Decimal, getcontext
 from pathlib import Path
 from typing import Annotated
 
@@ -47,12 +48,118 @@ from dxlink_scanner.stats import (
     prior_elicitation,
 )
 
+# Drift logger for local vs DXLink delta comparison
+DRIFT_LOGGER = logging.getLogger("dxlink_scanner.delta_drift")
+DRIFT_LOGGER.setLevel(logging.INFO)
+
 SinkType = StdoutSink | WebhookSink
 RuleEngine = CELRuleEngine
 
-app = typer.Typer(help="Real-time options volume scanner using Tastytrade DXLink")
 
-logger = logging.getLogger(__name__)
+def _black_scholes_delta(
+    spot: Decimal,
+    strike: Decimal,
+    expiry_str: str,
+    option_type: str,
+    rate: Decimal = Decimal("0.045"),  # ~SOFR 1D
+) -> Decimal | None:
+    """Compute Black-Scholes delta for European option.
+
+    Args:
+        spot: Current underlying price
+        strike: Option strike price
+        expiry_str: Expiry date as ISO string (YYYY-MM-DD)
+        option_type: "call" or "put"
+        rate: Risk-free rate (default ~SOFR)
+
+    Returns:
+        Delta as Decimal, or None if calculation fails
+    """
+    getcontext().prec = 28
+
+    try:
+        expiry_date = dt.datetime.fromisoformat(expiry_str).date()
+        today = dt.datetime.now(dt.UTC).date()
+        dte = (expiry_date - today).days
+        if dte < 0:
+            return None
+        if dte == 0:
+            now_utc = dt.datetime.now(dt.UTC)
+            market_close = now_utc.replace(hour=20, minute=0, second=0, microsecond=0)
+            seconds_left = (market_close - now_utc).total_seconds()
+            if seconds_left <= 0:
+                return None
+            t = Decimal(seconds_left) / Decimal(86400)
+        else:
+            t = Decimal(dte + 1)
+
+        S = float(spot)
+        K = float(strike)
+        r = float(rate)
+        T = float(t)
+
+        if T <= 0 or S <= 0 or K <= 0:
+            return None
+
+        sigma = 0.15
+
+        d1 = (math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * math.sqrt(T))
+        nd1 = 0.5 * (1 + math.erf(d1 / math.sqrt(2)))
+
+        if option_type == "call":
+            return Decimal(str(nd1))
+        else:
+            return Decimal(str(nd1 - 1))
+    except Exception:
+        return None
+
+
+def _compute_local_delta(
+    streamer_symbol: str,
+    mid_price: Decimal,
+) -> Decimal | None:
+    """Compute local delta from streamer symbol and mid_price.
+
+    Parses streamer symbol format like .SPY260731C500:
+    - Root: SPY
+    - Expiry: 260731 (YYMMDD)
+    - Type: C/P
+    - Strike: 500 (in points, need to divide by 1000 for actual price)
+    """
+    try:
+        sym = streamer_symbol.lstrip(".")
+        if ":" in sym:
+            sym = sym.split(":")[0]
+
+        type_idx = -1
+        for i, ch in enumerate(sym):
+            if ch in ("C", "P"):
+                type_idx = i
+        if type_idx == -1:
+            return None
+
+        option_type = "call" if sym[type_idx] == "C" else "put"
+        root = sym[:type_idx]
+        expiry_part = sym[type_idx + 1 : type_idx + 7]
+        strike_part = sym[type_idx + 7 :]
+
+        if len(expiry_part) != 6 or not strike_part:
+            return None
+
+        year = 2000 + int(expiry_part[:2])
+        month = int(expiry_part[2:4])
+        day = int(expiry_part[4:6])
+        expiry_str = f"{year:04d}-{month:02d}-{day:02d}"
+
+        strike_raw = int(strike_part)
+        if root in ("SPY", "QQQ", "IWM", "SPX"):
+            strike = Decimal(str(strike_raw)) / Decimal("1000")
+        else:
+            strike = Decimal(str(strike_raw)) / Decimal("1000")
+
+        return _black_scholes_delta(mid_price, strike, expiry_str, option_type)
+    except Exception:
+        return None
 
 
 def _timeandsale_to_event(tas: DXTimeAndSale) -> TimeAndSaleEvent:
@@ -84,7 +191,6 @@ def setup_logging(verbose: bool = False) -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-    # Suppress DEBUG messages from the tastytrade library by default
     logging.getLogger("tastytrade").setLevel(logging.ERROR)
 
 
@@ -97,7 +203,7 @@ async def _produce_events(
 ) -> None:
     """Producer: listen to one DXLink event type and push normalized events to queue."""
     try:
-        async for msg in streamer.listen(event_type):  # type: ignore[var-annotated]
+        async for msg in streamer.listen(event_type):
             counter[0] += 1
             event: ConsolidatedEvent = normalize_fn(msg, counter[0])
             try:
@@ -131,7 +237,6 @@ async def _consume_consolidated(
         event = await queue.get()
         store.ingest(event)
 
-        # Periodic checkpoint if model store is configured
         if model_store and model_sets:
             model_store.maybe_checkpoint(
                 _compile_model_sets(
@@ -144,54 +249,57 @@ async def _consume_consolidated(
                 )
             )
 
-        # Only TAS events go to rule engine + sinks
         if event.source_type == "TIME_AND_SALE":
-            # Enrich TAS event with delta from the latest TheoPrice snapshot
             snap = store.get(event.symbol)
-            delta = snap.delta if snap and snap.delta is not None else None
+            dxlink_delta = snap.delta if snap and snap.delta is not None else None
 
-            # Determine underlying for statistical models
+            local_delta = None
+            if snap and snap.bid_price is not None and snap.ask_price is not None:
+                mid_price = (snap.bid_price + snap.ask_price) / 2
+                local_delta = _compute_local_delta(event.symbol, mid_price)
+                if local_delta is not None and dxlink_delta is not None:
+                    drift = float(local_delta) - float(dxlink_delta)
+                    DRIFT_LOGGER.info(
+                        "delta_drift symbol=%s dxlink=%.4f local=%.4f diff=%.4f mid=%.2f",
+                        event.symbol,
+                        float(dxlink_delta),
+                        float(local_delta),
+                        drift,
+                        float(mid_price),
+                    )
+
+            delta = local_delta if local_delta is not None else dxlink_delta
+
             underlying = snap.underlying_symbol if snap else event.symbol
             if underlying not in bayesian_models:
                 underlying = "default"
 
-            # Update statistical models with this trade
             trade_time = dt.datetime.now(dt.UTC).timestamp()
             size = event.last_trade_size or 0
 
-            # Bayesian Gamma-Poisson (count of trades)
-            bayesian_models[underlying].update(1)  # count of 1 trade
-            # Also update for size (treating size as count in a separate model could work too)
-
-            # Hawkes process (event timing)
+            bayesian_models[underlying].update(1)
             hawkes_models[underlying].add_event(trade_time)
 
-            # Time-of-day seasonality
             if event.last_trade_time:
                 trade_dt = dt.datetime.fromtimestamp(event.last_trade_time / 1000, tz=dt.UTC)
                 seasonality_models[underlying].add_observation(trade_dt, float(size))
 
-            # Cross-symbol pooling (share information across underlyings)
             if cross_symbol_pool is not None:
                 cross_symbol_pool.update_symbol(underlying, 1, exposure=1.0)
 
-            # Volume at Price (VAP) - update with trade price and size
             vap = volume_at_price_models.get(underlying) if volume_at_price_models else None
             if vap:
                 trade_price_float = float(event.last_trade_price) if event.last_trade_price else 0.0
                 vap.add_trade(trade_price_float, size)
 
-            # Flow metrics - update VPIN, liquidity, trade classification
             flow = flow_metrics.get(underlying) if flow_metrics else None
             if flow and snap:
                 flow.update(snap, float(event.last_trade_price) if event.last_trade_price else 0.0, size)
 
-            # Cross-asset Hawkes - update systemic intensity
             if cross_asset_hawkes:
                 trade_time = event.last_trade_time / 1000.0 if event.last_trade_time else 0.0
                 cross_asset_hawkes.add_event(underlying, trade_time)
 
-            # Record event for adaptive tuner
             if adaptive_tuner:
                 adaptive_tuner.record_event(underlying)
 
@@ -212,7 +320,6 @@ async def _consume_consolidated(
             )
             alert = rules.process(tas_event)
             if alert:
-                # Record alert outcome for adaptive tuner
                 if adaptive_tuner:
                     adaptive_tuner.record_alert(alert.bayesian_decision or False, underlying)
                 for sink in sinks:
@@ -228,7 +335,6 @@ def _compile_model_sets(
     cross_symbol_pool: CrossSymbolPool | None = None,
     regime_detectors: dict[str, RegimeDetector] | None = None,
 ) -> dict[str, ModelSet]:
-    """Sync the individual model dicts into ModelSet objects for checkpointing."""
     for symbol, model_set in model_sets.items():
         model_set.bayesian = bayesian_models.get(symbol, BayesianGammaPoisson())
         model_set.hawkes = hawkes_models.get(symbol, HawkesProcess())
@@ -240,7 +346,6 @@ def _compile_model_sets(
 
 
 def _get_normalize_fn(event_type: type) -> Callable[..., ConsolidatedEvent]:
-    """Return the appropriate normalize function for a DXLink event type."""
     if event_type is Quote:
         return normalize_quote
     if event_type is DXTimeAndSale:
@@ -255,11 +360,15 @@ async def _on_event(
     rules: RuleEngine,
     sinks: list[SinkType],
 ) -> None:
-    """Callback for processing TAS events."""
     alert = rules.process(event)
     if alert:
         for sink in sinks:
             await sink.send(alert)
+
+
+app = typer.Typer(help="Real-time options volume scanner using Tastytrade DXLink")
+
+logger = logging.getLogger(__name__)
 
 
 @app.command()
@@ -277,12 +386,10 @@ def main(
         ),
     ] = False,
 ) -> None:
-    """Run the real-time options volume scanner."""
     setup_logging(verbose)
-    # Enable tastytrade SDK debug logging only when --debug-messages is passed
     if debug_messages:
         logging.getLogger("tastytrade.streamer").setLevel(logging.DEBUG)
-    load_dotenv()  # Load .env before config (env vars are used for interpolation)
+    load_dotenv()
     config = load_config(config_path)
     auth = TastyTradeAuth(
         client_id=config.tastytrade.client_id,
@@ -314,23 +421,10 @@ async def _run_scanner(
     debug_messages: bool = False,
     shutdown_event: asyncio.Event | None = None,
 ) -> None:
-    """Main async scanner loop.
-
-    Fetches option chains for all configured tickers (each with per-ticker
-    strike count and expiration filter), collects streamer symbols,
-    subscribes them all to a single DXLink connection, and evaluates
-    incoming TimeAndSale events for volume anomalies.
-
-    Uses a unified event consumer pattern: two producer tasks (one per
-    DXLink message type) feed into a bounded asyncio.Queue. A single
-    consumer normalizes events, updates the SnapshotStore, and routes
-    TimeAndSale events to the alert rule engine.
-    """
     session = auth.get_session()
     await session.refresh(force=True)
     logger.info("Authenticated with Tastytrade")
 
-    # Load significance thresholds if configured
     significance_thresholds: dict[str, dict[str, float]] = {}
     thresholds_file = config.outputs.significance_thresholds_file
     thresholds_path = Path(thresholds_file) if thresholds_file else None
@@ -348,7 +442,6 @@ async def _run_scanner(
         except Exception as e:
             logger.warning("Failed to load significance thresholds: %s", e)
 
-    # Bootstrap: fetch option chains for each ticker
     loader = ChainLoader(session=session)
     all_symbols: list[str] = []
     underlying_symbols: list[str] = []
@@ -362,13 +455,10 @@ async def _run_scanner(
             ticker.expiration_filter,
             is_future=ticker.option_type == "futures",
         )
-        # For futures, use the underlying_symbol from the option chain (e.g. "ESU6")
-        # rather than the root symbol (e.g. "ES") for market data price lookup
         if ticker.option_type == "futures" and underlying_info.symbol:
             price_symbol = underlying_info.symbol
         else:
             price_symbol = ticker.symbol
-        # Fetch underlying price (for logging/debugging; no longer used for strike selection)
         underlying_price = await loader.get_underlying_price(price_symbol, ticker.option_type)
         if underlying_price is None:
             logger.warning(
@@ -376,19 +466,13 @@ async def _run_scanner(
                 ticker.symbol,
                 len(strikes),
             )
-        # Use all 0DTE strikes — no ATM filtering
         symbols = [s.symbol for s in strikes]
-        count = len(strikes)
+        count = len(symbols)
         all_symbols.extend(symbols)
 
-        # Determine the streamer symbol for Quote subscription
         if ticker.option_type == "futures" and underlying_info.symbol:
-            # For futures, use the streamer-root-symbol (e.g. /ES:XCME) for
-            # Quote subscription. This is the DXLink-valid symbol that
-            # produces Quote events with bid/ask for the underlying.
             quote_symbol = InstrumentResolver.resolve_futures_streamer(ticker.symbol)
         elif ticker.option_type == "equity" and ticker.symbol in ("SPX", "NDX", "RUT"):
-            # Index options: Quote works without exchange suffix
             quote_symbol = InstrumentResolver.resolve_index_option_streamer(ticker.symbol)
         else:
             quote_symbol = ticker.symbol
@@ -396,14 +480,8 @@ async def _run_scanner(
         underlying_symbols.append(quote_symbol)
         underlying_symbols_set.add(quote_symbol)
 
-        # Build underlying_map for snapshot store and rule engine
-        # Maps option symbols → quote_symbol (streamer-root-symbol, e.g. /ES:XCME)
-        # so the engine can resolve underlying_symbol when looking up
-        # underlying_price (derived from Quote mid_price on the underlying)
         for s in strikes:
             underlying_map[s.symbol] = quote_symbol
-        # Map the quote_symbol → itself (identity) so Quote events on the
-        # underlying create a snapshot with matching underlying_symbol
         underlying_map[quote_symbol] = quote_symbol
 
         logger.info(
@@ -421,19 +499,12 @@ async def _run_scanner(
         len(config.watchlist.tickers),
     )
 
-    # Setup components
     stats_mgr = RollingStatsManager(config.detection)
-    # Create SnapshotStore before rules engine (rules engine needs store reference)
     store = SnapshotStore(config.stream, persist=config.outputs.persist_events)
     store.set_underlying_map(underlying_map)
-    # Pre-create snapshots for all underlying streamer symbols so that
-    # when Quote events arrive, the snapshot already has the correct
-    # underlying_symbol set. This ensures the engine can look up
-    # underlying_price via store.get(snap.underlying_symbol).mid_price
     for sym in underlying_symbols:
         store.bootstrap_snapshot(sym, underlying_map.get(sym, sym))
 
-    # Initialize statistical models for enhanced analysis
     data_dir = Path(config.outputs.data_dir)
     models_path = (
         Path(config.outputs.models_state_file) if config.outputs.models_state_file else data_dir / "models_meta.json"
@@ -441,7 +512,6 @@ async def _run_scanner(
     model_store = ModelStore(data_dir=data_dir, checkpoint_interval_sec=600.0)
     model_store._models_path = models_path
 
-    # Prior elicitation: try to load hyperpriors from parquet history
     hyperpriors: dict[str, float] | None = None
     if config.outputs.persist_events and data_dir.exists():
         try:
@@ -462,18 +532,14 @@ async def _run_scanner(
     flow_metrics: dict[str, FlowMetrics] = {}
     model_sets: dict[str, ModelSet] = {}
 
-    # Initialize VAP models with tick size from config
     tick_size = getattr(config.stream, "tick_size", None) or 0.01
 
-    # Create models for each ticker's underlying and a default
     all_underlyings = list(underlying_symbols_set)
     all_underlyings.append("default")
 
-    # Warm up: load saved model state or initialize from hyperpriors
     warm_models = model_store.warm_up(all_underlyings, hyperpriors)
 
     for underlying in all_underlyings:
-        # Initialize VAP and flow metrics for each symbol
         vap_models[underlying] = VolumeAtPrice(tick_size=tick_size)
         flow_metrics[underlying] = FlowMetrics(symbol=underlying)
 
@@ -506,14 +572,12 @@ async def _run_scanner(
                 pool=cross_symbol_pool,
             )
 
-    # Cross-asset Hawkes for systemic flow detection
     cross_asset_hawkes = CrossAssetHawkes(
         symbols=all_underlyings,
         mu=0.1,
         decay=1.0,
     )
 
-    # CEL-based rule engine: collect per-symbol and default rules from config
     per_symbol_rules: dict[str, list[CelAlertRule]] = {}
     for ticker in config.watchlist.tickers:
         if ticker.alert_rules:
@@ -551,14 +615,9 @@ async def _run_scanner(
             )
         )
 
-    # Connect to DXLink via SDK's DXLinkStreamer
     async with DXLinkStreamer(session) as streamer:
-        # Quote on underlying symbols (bid/ask for the underlying itself;
-        # mid_price is used as underlying_price in alerts)
         await streamer.subscribe(Quote, underlying_symbols)
-        # TimeAndSale on both the underlying AND all option symbols
         await streamer.subscribe(DXTimeAndSale, underlying_symbols + all_symbols)
-        # TheoPrice on all option symbols (for delta & Greeks)
         if all_symbols:
             await streamer.subscribe(DXTheoPrice, all_symbols)
         logger.info(
@@ -569,16 +628,8 @@ async def _run_scanner(
         )
         logger.info("Listening for volume anomalies...")
 
-        # Adaptive tuning feedback loop using new AdaptiveTuner API
-        adaptive_tuner = AdaptiveTuner(
-            config.detection,
-            config_path=config.outputs.models_state_file,
-        )
-        asyncio.create_task(adaptive_tuner.run_loop(interval_sec=300))
-
-        # Unified consumer: three producers → bounded queue → single consumer
         queue: asyncio.Queue[ConsolidatedEvent] = asyncio.Queue(maxsize=config.stream.backpressure_queue_size)
-        counter = [0]  # shared event counter
+        counter = [0]
 
         producers = []
         for event_type in (Quote, DXTimeAndSale, DXTheoPrice):
@@ -602,44 +653,30 @@ async def _run_scanner(
                 cross_asset_hawkes=cross_asset_hawkes,
                 model_store=model_store,
                 model_sets=model_sets,
-                adaptive_tuner=adaptive_tuner,
+                adaptive_tuner=AdaptiveTuner(config.detection, config_path=config.outputs.models_state_file),
             )
         )
 
-        # Also start parquet flush loop if persistence enabled
-        data_dir = Path(config.outputs.data_dir)
         if store.persist:
             await store.start_flush_loop(data_dir)
 
-        # Dynamic strike manager for intraday chain updates
         strike_mgr = DynamicStrikeManager(session, config.watchlist, rescan_interval_min=60)
         await strike_mgr.initial_scan()
 
-        # Shutdown monitor: checks both signal event and daily cutoff
-        # Futures (ES, NQ, etc.) trade overnight — only shut down at
-        # market close if there are no futures contracts in the watchlist.
         has_futures = any(t.option_type == "futures" for t in config.watchlist.tickers)
 
         async def _shutdown_monitor() -> None:
-            """Wait for SIGTERM or market close."""
             while True:
                 if shutdown_event is not None and shutdown_event.is_set():
                     logger.info("Shutdown signal received")
                     return
                 now = dt.datetime.now(dt.UTC)
-                now_et = now - dt.timedelta(hours=4)  # approx ET (no DST handling for now)
-                # For futures, markets close at 17:00 ET then reopen at 18:00 ET.
-                # Only shut down if we're past the final close (17:00 ET next day)
-                # — i.e., the overnight session has ended.
-                # Simple heuristic: if it's Friday 17:30+ ET, shut down (weekend).
-                # Otherwise, if has_futures, never auto-shutdown (futures trade overnight).
+                now_et = now - dt.timedelta(hours=4)
                 if has_futures:
-                    # Futures trade overnight; only auto-exit on weekends after 17:30 ET Friday
-                    if now_et.weekday() == 4 and now_et.hour >= 17:  # Friday 17:00+ ET
+                    if now_et.weekday() == 4 and now_et.hour >= 17:
                         logger.info("Futures weekend shutdown (Friday close) — exiting")
                         return
                 else:
-                    # Equity options only — shut down at 17:00 ET (21:00 UTC)
                     if now_et.hour >= 17:
                         logger.info("Market close reached (17:00 ET) — shutting down")
                         return
@@ -647,7 +684,6 @@ async def _run_scanner(
 
         monitor = asyncio.create_task(_shutdown_monitor())
 
-        # Periodic rescan task
         async def _rescan_loop() -> None:
             while True:
                 await asyncio.sleep(60)
@@ -657,56 +693,37 @@ async def _run_scanner(
                         await streamer.subscribe(DXTimeAndSale, delta.added)
                         logger.info("Subscribed to %d new symbols", len(delta.added))
                     if delta.removed:
-                        # Note: tastytrade SDK may not support unsubscribe;
-                        # stale symbols simply stop receiving matching events
                         logger.info("Unsubscribed %d stale symbols", len(delta.removed))
 
         rescan = asyncio.create_task(_rescan_loop())
 
-        # Periodic stats logging task
         async def _stats_logger() -> None:
-            """Log throughput stats every 30 seconds."""
             last_count = 0
-            last_alerts = 0
             while True:
                 await asyncio.sleep(30)
                 current_count = counter[0]
-                event_delta = current_count - last_count
-                current_alerts = adaptive_tuner._metrics.get("default", {}).get("alerts", 0)
-                alert_delta = current_alerts - last_alerts
-                logger.info(
-                    "Stats: %d events in last 30s (total=%d, queue=%d), alerts=%d",
-                    event_delta,
-                    current_count,
-                    queue.qsize(),
-                    alert_delta,
-                )
+                delta = current_count - last_count
+                logger.info("Stats: %d events in last 30s (total=%d, queue=%d)", delta, current_count, queue.qsize())
                 last_count = current_count
-                last_alerts = current_alerts
 
         stats_task = asyncio.create_task(_stats_logger())
 
-        # Wait for shutdown signal or any producer exit
         done, pending = await asyncio.wait([*producers, monitor], return_when=asyncio.FIRST_COMPLETED)
-        # Log any exceptions
         for t in done:
             if not isinstance(t, asyncio.Task):
                 continue
             exc = t.exception()
             if exc:
                 logger.error("Task exited with error: %s", exc)
-        # Cancel all remaining tasks
         for t in pending:
             t.cancel()
         consumer.cancel()
         rescan.cancel()
         stats_task.cancel()
 
-        # Flush remaining events to parquet
         if store.persist:
             await store.flush_remaining(data_dir)
 
-        # Save model state for next warm start
         checkpoint_models = _compile_model_sets(
             model_sets,
             bayesian_models,
