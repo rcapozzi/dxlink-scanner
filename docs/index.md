@@ -1,43 +1,42 @@
-# Options Radar Zero Scanner — Documentation
+# DXLink Scanner — Documentation
 
-**Real-time options volume scanner using Tastytrade DXLink streaming**
+**Real-time 0DTE options volume scanner using Tastytrade DXLink streaming**
 
 ## Quick Links
 
 | Topic | Document |
 |-------|----------|
-| 🏗️ System Architecture | [architecture.md](architecture.md) |
-| ⚙️ Configuration Reference | [configuration.md](configuration.md) |
-| 💾 Data Files & Storage | [data_files.md](data_files.md) |
-| 🔮 CEL Rule Engine | [cel_rules.md](cel_rules.md) |
-| 🚀 Deployment & Operations | [deployment.md](deployment.md) |
-| 📚 API Reference | [api_reference.md](api_reference.md) |
-| 📋 Implementation Plan | [implementation_plan.md](implementation_plan.md) |
-| 🔧 Consolidated Event Model | [consolidated_event_model.md](consolidated_event_model.md) |
+| Architecture | [architecture.md](architecture.md) |
+| Configuration Reference | [configuration.md](configuration.md) |
+| CEL Rule Engine | [cel_rules.md](cel_rules.md) |
+| Statistical Models | [model_cards.md](model_cards.md) |
+| DXLink Chunking Design | [dxlink_chunking_design.md](dxlink_chunking_design.md) |
+| DXLink Chunking Spec | [dxlink_chunking_spec.md](dxlink_chunking_spec.md) |
+| Filtering Research | [filtering.md](filtering.md) |
 
 ## Overview
 
-The **DXLink Scanner** is a real-time options volume scanner that connects to Tastytrade's DXLink WebSocket feed to monitor 0DTE (zero days to expiration) options for configurable underlying symbols (SPY, QQQ, SPX, ES, etc.).
+The **DXLink Scanner** is a real-time 0DTE options volume scanner that connects to Tastytrade's DXLink WebSocket feed to monitor options for configurable underlying symbols (SPY, QQQ, SPX, /ES).
 
 ### Key Features
 
-- **Real-time streaming**: Connects to DXLink WebSocket for Quote and TimeAndSale events
-- **Consolidated event model**: Merges both event types into a per-symbol snapshot for cross-message analytics
-- **Underlying price**: Derived from Quote mid_price (bid+ask)/2 on the underlying streamer symbol
-- **CEL rule engine**: CEL-based rules with three tiers — per-symbol, underlying-scoped, and default fallback
-- **Per-underlying scoping**: Define one rule that applies to ALL option strikes of an underlying
+- **Real-time streaming**: Connects to DXLink WebSocket for Quote, TimeAndSale, and TheoPrice events
+- **Statistical anomaly detection**: Bayesian Gamma-Poisson, Hawkes process, regime detection, VPIN, VAP, seasonality
+- **Adaptive tuning**: Feedback loop adjusts thresholds based on realized FDR/TPR
+- **Delta drift monitoring**: Local Black-Scholes delta vs DXLink delta comparison
+- **DXLink payload chunking**: Automatic chunking to stay under 64k message limit
+- **Decision-theoretic alerting**: Cost-aware rules with online FDR control
+- **CEL rule engine**: Three tiers — per-symbol, underlying-scoped, and default fallback
 - **Parquet persistence**: Events written to partitioned Parquet files for historical analysis
 - **Multiple outputs**: JSON lines to stdout, webhook delivery with retry logic
-- **Graceful shutdown**: SIGTERM handling with Parquet flush on market close
 
 ### Supported Instruments
 
 | Type | Examples | Notes |
 |------|----------|-------|
-| Equity options (0DTE) | SPY, QQQ, IWM, DIA | Same-day expiry only |
-| Index options | SPX, NDX, RUT | Cash-settled, European |
-| Futures options | ES, NQ, RTY | `/ES:XCME` format |
-| Underlying futures | /ES, /NQ, /RTY | Quote subscription supported |
+| Equity options (0DTE) | SPY, QQQ | Same-day expiry only |
+| Index options | SPX | Cash-settled, European |
+| Futures options | /ES, /NQ | `/ES:XCME` format |
 
 ### Tech Stack
 
@@ -45,7 +44,7 @@ The **DXLink Scanner** is a real-time options volume scanner that connects to Ta
 |-----------|------------|
 | Language | Python 3.14+ |
 | Package Manager | uv |
-| Streaming | tastytrade SDK (`DXLinkStreamer`) |
+| Streaming | tastytrade SDK + custom chunked wrapper |
 | Serialization | orjson, PyArrow |
 | Config | Pydantic + YAML |
 | Rule Engine | cel-expr-python (CEL) |
@@ -70,35 +69,36 @@ uv run dxlink-scanner --config production.yaml
 ## Project Structure
 
 ```
-scanner/
-├── docs/                    # Documentation (this directory)
+dxlink-scanner/
 ├── src/dxlink_scanner/
-│   ├── cli.py              # CLI entry point, main event loop
-│   ├── config/__init__.py  # Pydantic config models
-│   ├── models.py           # Data models (Alert, TimeAndSaleEvent, snapshots)
+│   ├── cli.py                  # CLI entry point, main event loop
+│   ├── config/__init__.py      # Pydantic config models
+│   ├── models.py               # Data models (Alert, TimeAndSaleEvent, snapshots)
+│   ├── chunked_streamer.py     # DXLink payload chunking wrapper
 │   ├── rules/
-│   │   ├── cel_engine.py   # CEL-based rule engine
-│   │   └── __init__.py     # Exports CELRuleEngine
+│   │   └── cel_engine.py       # CEL-based rule engine
 │   ├── sinks/
-│   │   ├── stdout_sink.py  # JSON lines output
-│   │   ├── webhook_sink.py # HTTP webhook with retry
-│   │   └── __init__.py
+│   │   ├── stdout_sink.py      # JSON lines output
+│   │   └── webhook_sink.py     # HTTP webhook with retry
 │   ├── stats/
-│   │   ├── rolling_v2.py    # RollingStatsManagerV2 / RollingStatsV2 (median/MAD/percentiles/time decay)
-│   │   └── __init__.py
+│   │   ├── statistical_analysis.py  # Bayesian, Hawkes, Seasonality, Regime, VAP
+│   │   ├── model_store.py      # Model persistence, prior elicitation
+│   │   ├── dynamic_thresholds.py  # DynamicThresholdManager, AdaptiveTuner
+│   │   ├── microstructure.py   # VPIN, FlowMetrics, CrossAssetHawkes
+│   │   ├── rolling_v2.py       # RollingStatsManagerV2
+│   │   └── seasonality.py      # TimeOfDayAggregator
 │   ├── schemas/
-│   │   ├── v1.py           # ConsolidatedEvent Parquet schema v1
-│   │   └── v2.py           # Schema v2 with derived Quote fields (mid_price, spread, etc.)
-│   ├── snapshot_store.py   # In-memory snapshot + Parquet flush
-│   ├── dynamic_strikes.py  # Dynamic strike management
-│   ├── auth.py             # Tastytrade authentication
-│   ├── bootstrap.py        # Option chain loading
-│   ├── debug_dxfeed.py     # DXLink debugging utility
-│   └── poc_tt.py           # Tastytrade API proof-of-concept
-├── tests/                  # Test suite (116 tests)
-├── production.yaml         # Production config template
-├── dxlink-dxlink_scanner.yaml     # Example config
-└── pyproject.toml          # Project metadata & tool config
+│   │   ├── v1.py               # Parquet schema v1
+│   │   └── v2.py               # Parquet schema v2
+│   ├── snapshot_store.py       # In-memory snapshot + Parquet flush
+│   ├── dynamic_strikes.py      # Dynamic strike management
+│   ├── auth.py                 # Tastytrade authentication
+│   ├── bootstrap.py            # Option chain loading
+│   └── debug_dxfeed.py         # DXLink debugging utility
+├── tests/                      # Test suite (309 tests)
+├── docs/                       # Documentation
+├── production.yaml             # Production config
+└── pyproject.toml              # Project metadata
 ```
 
 ## Configuration
@@ -118,19 +118,27 @@ watchlist:
   tickers:
     - symbol: "SPY"
       option_type: "equity"
-      strikes_around_atm: 10
+      expiration_filter: "0DTE"
       underlying_alert_rules:
         - name: "large_print"
           expression: "trade.is_option && trade.size >= 50 && trade.price > 1.0"
           severity: "high"
 
 detection:
-  size_mult: 5.0
-  abs_min_size: 10
+  size_mult: 2.0
+  abs_min_size: 5
+  fdr_alpha: 0.05
+  vpin_threshold: 0.6
+
+dxlink:
+  max_payload_bytes: 60000
+  chunk_delay_sec: 0.1
+  enable_chunking: true
 
 outputs:
   stdout: true
   persist_events: true
+  data_dir: "data/events"
   webhook:
     enabled: false
     url: "http://localhost:8080/alerts"
@@ -144,9 +152,6 @@ outputs:
 # Run with production config
 uv run dxlink-scanner --config production.yaml
 
-# Enable event persistence to Parquet (also set persist_events: true in config)
-uv run dxlink-scanner --config production.yaml  # persistence enabled via persist_events: true in config
-
 # Debug raw DXLink messages
 uv run dxlink-scanner --config production.yaml --debug-messages
 ```
@@ -155,8 +160,7 @@ uv run dxlink-scanner --config production.yaml --debug-messages
 
 ```bash
 # Use production config (with env var substitution)
-uv run dxlink-scanner --config production.yaml  # persistence enabled via persist_events: true in config-events
-# or via config: persist_events: true
+uv run dxlink-scanner --config production.yaml
 ```
 
 ## Testing
@@ -173,24 +177,39 @@ uv run mypy src/
 
 # Lint
 uv run ruff check src/ tests/
-uv run ruff format --check src/ tests/
 ```
 
 ## Data Flow
 
 ```
 ┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│  Tastytrade     │────▶│  DXLinkStreamer  │────▶│  Unified        │
-│  DXLink WS      │     │  (2 producers)   │     │  Consumer       │
+│  Tastytrade     │────▶│  ChunkedDXLink   │────▶│  Unified        │
+│  DXLink WS      │     │  Streamer        │     │  Consumer       │
 └─────────────────┘     └──────────────────┘     └────────┬────────┘
                                                           ▼
 ┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│  Alert Sinks    │◀────│  Rule Engines    │◀────│  SnapshotStore  │
-│  (stdout, web)  │     │  CELRuleEngine   │     │  (mem + Parquet)│
+│  Alert Sinks    │◀────│  CEL Rule Engine │◀────│  SnapshotStore  │
+│  (stdout, web)  │     │  + Stats Models  │     │  (mem + Parquet)│
 └─────────────────┘     └──────────────────┘     └─────────────────┘
 ```
 
 See [architecture.md](architecture.md) for detailed process flows.
+
+## Stats Pipeline
+
+| Model | Module | Purpose |
+|-------|--------|---------|
+| Bayesian Gamma-Poisson | `statistical_analysis.py` | Trade count posterior, anomaly scoring |
+| Hawkes Process | `statistical_analysis.py` | Self-exciting trade clustering |
+| Time-of-Day Seasonality | `statistical_analysis.py` | Intraday volume pattern normalization |
+| Cross-Symbol Pooling | `statistical_analysis.py` | Hierarchical Bayes for sparse symbols |
+| Volume-at-Price | `statistical_analysis.py` | POC, value area, imbalance |
+| Regime Detector | `statistical_analysis.py` | Volatility regime classification |
+| VPIN Calculator | `microstructure.py` | Order flow toxicity |
+| Flow Metrics | `microstructure.py` | Liquidity, trade classification |
+| Cross-Asset Hawkes | `microstructure.py` | Systemic flow detection |
+| Dynamic Thresholds | `dynamic_thresholds.py` | Expression-based thresholds |
+| Adaptive Tuner | `dynamic_thresholds.py` | FDR/TPR feedback loop |
 
 ## License
 

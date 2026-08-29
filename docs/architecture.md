@@ -1,23 +1,23 @@
 # System Architecture
 
-This document describes the technical process flows, component interactions, and data flow through the Options Radar Zero Scanner.
+This document describes the technical process flows, component interactions, and data flow through the DXLink Scanner.
 
 ## High-Level Data Flow
 
 ```mermaid
 flowchart TD
     subgraph "Tastytrade Infrastructure"
-        DXLink[("DXLink WebSocket\nQuote / TAS")]
+        DXLink[("DXLink WebSocket\nQuote / TAS / TheoPrice")]
     end
 
     subgraph "Scanner Process"
         Auth["tastytrade.Session\n(OAuth2 + DXLink Token)"]
         Chain["Option Chain Loader\n(get_option_chain)"]
-        Streamer["DXLinkStreamer\n(2 producers)"]
+        Streamer["ChunkedDXLinkStreamer\n(3 producers)"]
         Queue["asyncio.Queue\n(backpressure)"]
-        Consumer["Unified Consumer\n(normalize → store)"]
+        Consumer["Unified Consumer\n(normalize → store → stats)"]
         Store["SnapshotStore\n(mem + Parquet)"]
-        CELRuleEngine["CEL Rule Engine"]
+        CELRuleEngine["CEL Rule Engine\n+ Stats Models"]
         StdoutSink["StdoutSink\n(JSON lines)"]
         WebhookSink["WebhookSink\n(HTTP + retry)"]
     end
@@ -40,7 +40,6 @@ flowchart TD
 **Purpose**: Obtain and maintain valid Tastytrade session + DXLink token.
 
 ```python
-# Current: Uses tastytrade.Session (SDK)
 from tastytrade.session import Session
 
 session = Session(
@@ -48,35 +47,23 @@ session = Session(
     refresh_token=refresh_token,
     is_test=sandbox,
 )
-# Session handles:
-# - OAuth2 token refresh (auto on session_expiration)
-# - DXLink token fetch via POST /api-quote-token
-# - Base URL selection (sandbox vs production)
 ```
 
 **Flow**:
 1. Load credentials from config (env var substitution)
 2. Create `Session` → auto-fetches DXLink token
-3. Pass session to `DXLinkStreamer` and chain loader
-4. Session auto-refreshes on expiry (no manual intervention)
+3. Pass session to `ChunkedDXLinkStreamer` and chain loader
+4. Session auto-refreshes on expiry
 
 ### 2. Option Chain Loading (`src/dxlink_scanner/bootstrap.py`)
 
-**Purpose**: Fetch 0DTE option chain for each configured underlying, extract streamer symbols.
+**Purpose**: Fetch 0DTE option chain for each configured underlying, extract all streamer symbols.
 
 ```python
-# Current: Uses SDK instrument functions
 from tastytrade.instruments import get_option_chain, get_future_option_chain
 
-# Equity (SPY, QQQ)
 chains = get_option_chain(session, "SPY")  # dict[date, list[Option]]
-
-# Futures (ES, NQ)
 chains = get_future_option_chain(session, "ES")  # dict[date, list[FutureOption]]
-
-# Filter to 0DTE (today's expiry)
-today = datetime.now(UTC).date()
-option_symbols = [opt.streamer_symbol for opt in chains.get(today, [])]
 ```
 
 **Outputs**:
@@ -84,9 +71,9 @@ option_symbols = [opt.streamer_symbol for opt in chains.get(today, [])]
 - `symbol → underlying_symbol` mapping for consolidation
 - Strike/expiry metadata for dynamic strike management
 
-### 3. DXLink Streaming (`tastytrade.streamer.DXLinkStreamer`)
+### 3. DXLink Streaming (`src/dxlink_scanner/chunked_streamer.py`)
 
-**Purpose**: Subscribe to real-time market data via WebSocket.
+**Purpose**: Subscribe to real-time market data via WebSocket with automatic payload chunking.
 
 **Three Producers** (run concurrently):
 ```python
@@ -107,57 +94,63 @@ async def _produce_theoprices():
 **Subscription Strategy**:
 | Event Type | Symbols | Notes |
 |------------|---------|-------|
-| Quote | All option symbols + underlying futures | Best bid/ask; mid_price = (bid+ask)/2 |
-| TimeAndSale | All option symbols | Trade prints | last_trade_price, last_trade_size, trade_type |
-| TheoPrice | All option symbols (continuous) | Delta, gamma, dividend, interest, theo_price |
+| Quote | Underlying symbols only | Best bid/ask; mid_price = (bid+ask)/2 |
+| TimeAndSale | All option symbols + underlying | Trade prints |
+| TheoPrice | All option symbols | Delta, gamma, dividend, interest, theo_price |
+
+**Chunking**: The `ChunkedDXLinkStreamer` wrapper splits large symbol lists into multiple `FEED_SUED_SUBSCRIPTION` messages, each staying under 60k bytes (DXLink limit is 64k).
 
 ### 4. Backpressure Queue (`asyncio.Queue`)
 
 **Purpose**: Buffer between producers and consumer with explicit backpressure.
 
 ```python
-# Configurable
 queue = asyncio.Queue(maxsize=config.stream.backpressure_queue_size)  # default 500
-
-# Producer side (with timeout)
-try:
-    await asyncio.wait_for(queue.put((msg_type, msg)), timeout=0.1)
-except asyncio.TimeoutError:
-    backpressure_dropped_total.labels(type=msg_type).inc()
-    logger.warning("Queue full, dropping %s", msg_type)
 ```
 
 **Drop Policy**: FIFO (oldest dropped) — older events have less analytical value.
 
 ### 5. Unified Consumer (`src/dxlink_scanner/cli.py:_consume_consolidated`)
 
-**Purpose**: Single consumer loop normalizing all event types → `ConsolidatedEvent` → `SnapshotStore`.
+**Purpose**: Single consumer loop normalizing all event types → `ConsolidatedEvent` → `SnapshotStore` → statistical models → rule engine.
 
 ```python
-async def _consume_consolidated(queue, store, rules, sinks):
+async def _consume_consolidated(queue, store, rules, sinks, ...):
     while True:
         event = await queue.get()
         store.ingest(event)
 
-        # Evaluate rules (if TimeAndSale) — enrich with delta from snapshot
         if event.source_type == "TIME_AND_SALE":
             snap = store.get(event.symbol)
-            delta = snap.delta if snap else None
-            tas_event = to_time_and_sale_event(event, delta=delta)
+            # Compute local delta from Quote mid_price
+            local_delta = _compute_local_delta(event.symbol, mid_price)
+            # Compare with DXLink delta for drift monitoring
+            drift = float(local_delta) - float(dxlink_delta)
+            DRIFT_LOGGER.info(f"delta_drift symbol=... dxlink=... local=... diff=...")
+
+            # Update statistical models
+            bayesian_models[underlying].update(1)
+            hawkes_models[underlying].add_event(trade_time)
+            seasonality_models[underlying].add_observation(...)
+            vap.add_trade(price, size)
+            flow.update(snap, price, size)
+            cross_asset_hawkes.add_event(underlying, trade_time)
+
+            # Enrich TAS event and evaluate rules
+            tas_event = TimeAndSaleEvent(..., delta=delta)
             alert = rules.process(tas_event)
             if alert:
                 for sink in sinks:
                     await sink.send(alert)
-
         queue.task_done()
 ```
 
 **Normalization** (`src/dxlink_scanner/models.py`):
-|| DXLink Type | Normalizer | Key Fields Extracted |
-||-------------|------------|---------------------|
-|| Quote | `normalize_quote()` | bid/ask price |
-|| TimeAndSale | `normalize_timeandsale()` | last_trade_price, last_trade_size, last_trade_type |
-|| TheoPrice | `normalize_theoprice()` | theo_price, underlying_price, delta, gamma, dividend, interest |
+| DXLink Type | Normalizer | Key Fields Extracted |
+|-------------|------------|---------------------|
+| Quote | `normalize_quote()` | bid/ask price |
+| TimeAndSale | `normalize_timeandsale()` | last_trade_price, last_trade_size, last_trade_type |
+| TheoPrice | `normalize_theoprice()` | theo_price, underlying_price, delta, gamma, dividend, interest |
 
 ### 6. Snapshot Store (`src/dxlink_scanner/snapshot_store.py`)
 
@@ -168,60 +161,21 @@ class SnapshotStore:
     def __init__(self, config, underlying_map):
         self._snapshots: dict[str, ConsolidatedSnapshot] = {}
         self._buffer: list[ConsolidatedEvent] = []
-        self._flush_task = asyncio.create_task(self._flush_loop())
-    
+
     def ingest(self, event: ConsolidatedEvent):
         snap = self._snapshots.get(event.symbol)
-        if snap is None:
-            snap = ConsolidatedSnapshot(
-                symbol=event.symbol,
-                underlying_symbol=self._underlying_map.get(event.symbol, event.symbol),
-                updated_at=datetime.now(UTC),
-            )
         merge_into_snapshot(snap, event)
-        self._snapshots[event.symbol] = snap
-        
-        # Buffer for Parquet
         self._buffer.append(event)
-        if len(self._buffer) >= self._flush_batch_size:
-            await self.flush()
-    
-    async def _flush_loop(self):
-        while True:
-            await asyncio.sleep(self._flush_interval_sec)
-            await self.flush()
-    
-    async def flush(self):
-        if not self._buffer: return
-        events = self._buffer
-        self._buffer = []
-        await self._write_parquet(events)
 ```
 
 **Parquet Output**:
-- Partitioned by date: `data/events/YYYY-MM-DD/events_v1_<uuid>.parquet`
-- Schema: `schemas/v1.py` (PyArrow)
-- Flush triggers: `flush_batch_size` (10K) OR `flush_interval_sec` (5s)
+- Partitioned by date: `data/events/YYYY-MM-DD/events_v2_<uuid>.parquet`
+- Schema: `schemas/v2.py` (PyArrow)
+- Flush triggers: `flush_batch_size` (10K) OR `flush_interval_sec` (300s)
 
 ### 7. Rule Engine (CEL)
 
 The `CELRuleEngine` evaluates config-driven rules using the Common Expression Language. See [docs/cel_rules.md](cel_rules.md) for the full reference.
-
-#### CEL Engine (`src/dxlink_scanner/rules/cel_engine.py:CELRuleEngine`)
-
-**Config-Driven Rules** (per-symbol in YAML):
-```yaml
-watchlist:
-  tickers:
-    - symbol: "SPY"
-      alert_rules:
-        - name: "large_print"
-          expression: "trade.size >= 100 && trade.price > 1.0"
-          severity: "high"
-        - name: "call_sweep"
-          expression: "trade.size >= 50 && option.type == 'call'"
-          severity: "medium"
-```
 
 **Activation Context** (variables available in CEL expressions):
 ```python
@@ -232,11 +186,28 @@ activation = {
     "underlying": {symbol, price},  # if underlying
     "stats": {median, mad, count, mean, std, p25, p75, p90, p95, p99,
               z_score, modified_z_score, rth_*, eth_*},
-    "config": {abs_min_size, size_mult, p95_size, p95_delta_weighted_size},
+    "config": {abs_min_size, size_mult, p95_size, p95_delta_weighted_size,
+               bayesian_mean, hawkes_intensity, vpin, regime, ...},
 }
 ```
 
-### 8. Alert Sinks
+### 8. Statistical Models (`src/dxlink_scanner/stats/`)
+
+| Model | Module | Purpose |
+|-------|--------|---------|
+| Bayesian Gamma-Poisson | `statistical_analysis.py` | Trade count posterior, anomaly scoring |
+| Hawkes Process | `statistical_analysis.py` | Self-exciting trade clustering |
+| Time-of-Day Seasonality | `statistical_analysis.py` | Intraday volume pattern normalization |
+| Cross-Symbol Pooling | `statistical_analysis.py` | Hierarchical Bayes for sparse symbols |
+| Volume-at-Price | `statistical_analysis.py` | POC, value area, imbalance |
+| Regime Detector | `statistical_analysis.py` | Volatility regime classification |
+| VPIN Calculator | `microstructure.py` | Order flow toxicity |
+| Flow Metrics | `microstructure.py` | Liquidity, trade classification |
+| Cross-Asset Hawkes | `microstructure.py` | Systemic flow detection |
+| Dynamic Thresholds | `dynamic_thresholds.py` | Expression-based thresholds |
+| Adaptive Tuner | `dynamic_thresholds.py` | FDR/TPR feedback loop |
+
+### 9. Alert Sinks
 
 #### Stdout Sink (`src/dxlink_scanner/sinks/stdout_sink.py`)
 - JSON Lines output (one alert per line)
@@ -246,7 +217,6 @@ activation = {
 #### Webhook Sink (`src/dxlink_scanner/sinks/webhook_sink.py`)
 - Async HTTP POST with exponential backoff retry
 - Configurable timeout, max_retries
-- Reuses `_alert_to_dict()` for payload format
 
 **Output Format**:
 ```json
@@ -257,7 +227,12 @@ activation = {
   "timestamp_ms": 1722355200000,
   "rule": "size_mult",
   "severity": "high",
-  "underlying_price": 450.00
+  "underlying_price": 450.00,
+  "posterior_mean": 12.5,
+  "bayes_factor": 3.2,
+  "p_value": 0.01,
+  "vpin": 0.65,
+  "trade_side": "buy"
 }
 ```
 
@@ -271,7 +246,7 @@ sequenceDiagram
     participant Config as config.load_config()
     participant Auth as tastytrade.Session
     participant Chain as bootstrap.py
-    participant Streamer as DXLinkStreamer
+    participant Streamer as ChunkedDXLinkStreamer
     participant Store as SnapshotStore
     participant Rules as Rule Engines
     participant Sinks as Alert Sinks
@@ -282,7 +257,7 @@ sequenceDiagram
     Auth-->>CLI: Session (with DXLink token)
     CLI->>Chain: Load option chains
     Chain-->>CLI: streamer_symbols, underlying_map
-    CLI->>Streamer: Create + connect
+    CLI->>Streamer: Create + connect (chunked)
     CLI->>Store: Create SnapshotStore
     CLI->>Rules: Create CELRuleEngine
     CLI->>Sinks: Create StdoutSink (+ WebhookSink)
@@ -293,26 +268,15 @@ sequenceDiagram
 ### Shutdown Sequence (Graceful)
 
 ```python
-# In cli.py:_run_scanner()
 shutdown_event = asyncio.Event()
-
-def _signal_handler():
-    shutdown_event.set()
-
 signal.signal(signal.SIGTERM, _signal_handler)
 signal.signal(signal.SIGINT, _signal_handler)
 
-await shutdown_event.wait()  # Block until SIGTERM/SIGINT
+await shutdown_event.wait()
 
-# Graceful shutdown
 logger.info("Shutdown signal received, flushing...")
-await store.flush()           # Write remaining Parquet
-await store.close()           # Cleanup
-for task in producer_tasks:
-    task.cancel()
-await asyncio.gather(*producer_tasks, return_exceptions=True)
-await consumer_task
-logger.info("Shutdown complete")
+await store.flush_remaining(data_dir)
+model_store.save(checkpoint_models)
 ```
 
 **Trigger**: 17:00 ET (market close) via external scheduler (cron/systemd) sending SIGTERM. For futures in the watchlist, the scanner continues overnight — no auto-shutdown until Friday 17:00 ET.
@@ -339,25 +303,32 @@ class TimeAndSaleEvent:
     symbol: str
     price: Decimal
     size: int
-    timestamp: datetime
+    timestamp: dt.datetime
     event_type: Literal["TimeAndSale"] = "TimeAndSale"
     bid_price: Decimal | None = None
     ask_price: Decimal | None = None
     trade_type: str | None = None
-    delta: Decimal | None = None  # From TheoPrice, for delta-weighted size
+    delta: Decimal | None = None  # Local or DXLink delta
 ```
 
 ### Alert (output from rules)
 ```python
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class Alert:
     symbol: str
     price: Decimal
     size: int
-    timestamp_ms: int          # Epoch milliseconds
+    timestamp_ms: int
     rule_name: str
-    severity: str = "high"     # info, low, medium, high, critical
-    underlying_price: float | None = None  # from Quote mid_price on underlying
+    severity: str = "high"
+    underlying_price: float | None = None
+    posterior_mean: float | None = None
+    bayes_factor: float | None = None
+    p_value: float | None = None
+    decision_threshold: float | None = None
+    bayesian_decision: bool | None = None
+    vpin: float | None = None
+    trade_side: str | None = None
 ```
 
 ### ConsolidatedSnapshot (in-memory state)
@@ -366,7 +337,7 @@ class Alert:
 class ConsolidatedSnapshot:
     symbol: str
     underlying_symbol: str
-    updated_at: datetime
+    updated_at: dt.datetime
     # Quote-derived
     bid_price: Decimal | None = None
     ask_price: Decimal | None = None
@@ -376,18 +347,26 @@ class ConsolidatedSnapshot:
     # TAS-derived
     last_trade_price: Decimal | None = None
     last_trade_size: int | None = None
-    last_trade_time: int | None = None      # epoch ms
+    last_trade_time: int | None = None
     last_trade_type: str | None = None
     trade_vs_mid: Decimal | None = None
     # TheoPrice-derived
     theo_price: Decimal | None = None
-    underlying_price: Decimal | None = None  # from TheoPrice
+    underlying_price: Decimal | None = None
     delta: Decimal | None = None
     gamma: Decimal | None = None
     dividend: Decimal | None = None
     interest: Decimal | None = None
-    # Lifecycle
-    evict_at: int | None = None             # epoch ms for TTL
+    # Microstructure
+    vap_poc: Decimal | None = None
+    vap_val_area_low: Decimal | None = None
+    vap_val_area_high: Decimal | None = None
+    vap_imbalance: float | None = None
+    spread_p50: float | None = None
+    spread_p95: float | None = None
+    depth_at_poc_median: float | None = None
+    vpin: float | None = None
+    trade_side: str | None = None
 ```
 
 ## Error Handling
@@ -395,7 +374,7 @@ class ConsolidatedSnapshot:
 | Layer | Strategy |
 |-------|----------|
 | DXLink producers | Log error, continue (streamer handles reconnect) |
-| Queue full | Drop oldest, increment `backpressure_dropped_total` |
+| Queue full | Drop oldest, increment drop counter |
 | Normalization | Skip event, log warning, continue |
 | Rule engine | Catch exceptions per-rule, log, continue to next rule |
 | Sinks (stdout) | Log error, continue (non-blocking) |
@@ -409,23 +388,21 @@ class ConsolidatedSnapshot:
 | Event latency (receive → snapshot) | < 5ms p99 | Single-threaded consumer |
 | Alert latency (trade → output) | < 10ms p99 | Sync rule eval + async sink |
 | Memory (10K symbols) | ~20 MB | `@dataclass(slots=True)` |
-| Parquet flush (10K events) | < 50ms | Polars + PyArrow |
+| Parquet flush (10K events) | < 50ms | PyArrow |
 | CEL rule eval | ~1-5 μs/rule | Compiled AST cached |
+| DXLink chunk overhead | < 200ms | 100ms × 2 chunks typical |
 
 ## Monitoring & Observability
 
 ### Logs
 - Structured JSON logging (configurable level)
 - Key events: connection, subscription, alerts, flush, drops
-
-### Metrics (Prometheus-style counters)
-- `backpressure_dropped_total{type="QUOTE|TAS"}`
-- `alerts_total{rule="<cel_rule_name>", severity="..."}`
-- `parquet_flush_duration_seconds`
-- `parquet_events_written_total`
+- `dxlink_scanner.chunk`: chunk operations
+- `dxlink_scanner.delta_drift`: local vs DXLink delta comparison
 
 ### Health Checks
 - DXLink connection status
 - Queue depth (backpressure indicator)
 - Parquet flush lag
 - Alert rate (alerts/minute)
+- Model health (calibration, drift, coverage)
