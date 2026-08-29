@@ -1,0 +1,269 @@
+# Demo config: SPX + SPY statistical anomaly detection
+#
+# Demonstrates the full stats pipeline for 0DTE index options.
+# Copy this file and replace credential placeholders before use.
+
+tastytrade:
+  client_id: "${TASTY_CLIENT_ID}"
+  client_secret: "${TASTY_CLIENT_SECRET}"
+  refresh_token: "${TASTY_REFRESH_TOKEN}"
+  sandbox: false
+
+watchlist:
+  default_alert_rules:
+    # === Absolute threshold rules ===
+    - name: "absolute_size"
+      expression: "trade.size >= 1000"
+      severity: "critical"
+
+    # === P95 significance thresholds (from nightly compaction) ===
+    - name: "p95_raw_size"
+      expression: "trade.is_option && trade.size >= config.p95_size"
+      severity: "high"
+
+    - name: "p95_delta_weighted"
+      expression: "trade.is_option && trade.delta_weighted_size >= config.p95_delta_weighted_size"
+      severity: "high"
+
+    # === Bayesian decision-theoretic alerting ===
+    - name: "bayesian_anomaly"
+      expression: |
+        trade.is_option &&
+        config.bayesian_decision == true &&
+        trade.delta_weighted_size >= config.p95_delta_weighted_size
+      severity: "high"
+
+    # === Online FDR-controlled anomaly ===
+    - name: "fdr_controlled"
+      expression: |
+        trade.is_option &&
+        online_fdr_pvalue(config.bayesian_p_value) &&
+        trade.size >= config.seasonal_adj_size
+      severity: "medium"
+
+    # === Hawkes clustering detection ===
+    - name: "hawkes_cluster"
+      expression: |
+        trade.is_option &&
+        config.hawkes_intensity > config.hawkes_mu * 4 &&
+        trade.delta_weighted_size >= config.p95_delta_weighted_size
+      severity: "high"
+
+    # === Toxic flow (VPIN + adverse classification) ===
+    - name: "toxic_flow"
+      expression: |
+        trade.is_option &&
+        config.vpin >= config.vpin_threshold &&
+        trade.delta_weighted_size >= config.p95_delta_weighted_size &&
+        config.trade_side == "sell"
+      severity: "high"
+
+    # === Systemic flow (cross-asset Hawkes excitation) ===
+    - name: "systemic_flow"
+      expression: "config.systemic_score > 2.0"
+      severity: "critical"
+
+    # === Volume-at-Price POC rejection ===
+    - name: "vap_poc_rejection"
+      expression: |
+        trade.is_option &&
+        trade.price < config.vap_val_area_low &&
+        trade.size >= 50
+      severity: "medium"
+
+    # === Seasonally-adjusted surge ===
+    - name: "seasonal_surge"
+      expression: |
+        trade.is_option &&
+        trade.size >= config.seasonal_adj_size &&
+        config.seasonality_factor > 1.2
+      severity: "medium"
+
+    # === Wide spread toxicity ===
+    - name: "wide_spread_toxicity"
+      expression: |
+        trade.is_option &&
+        config.spread_p95 > 0.05 &&
+        config.vpin >= config.vpin_threshold &&
+        trade.size >= 30
+      severity: "high"
+
+    # === Regime-adaptive threshold ===
+    - name: "regime_adaptive"
+      expression: |
+        trade.is_option &&
+        trade.size >= config.p95_size * (1 + stats.vol_ratio * 0.5)
+      severity: "medium"
+
+    # === Cross-asset excitation ===
+    - name: "cross_asset_excitation"
+      expression: |
+        trade.is_option &&
+        config.systemic_score > 1.5 &&
+        config.cross_asset_vpin >= config.vpin_threshold &&
+        trade.delta_weighted_size >= config.p95_delta_weighted_size
+      severity: "high"
+
+    # === Depth deterioration ===
+    - name: "depth_deterioration"
+      expression: |
+        trade.is_option &&
+        config.depth_at_poc_median < 10 &&
+        config.spread_p50 > 0.03 &&
+        trade.size >= 5
+      severity: "medium"
+
+    # === Pooled sparse signal ===
+    - name: "pooled_sparse"
+      expression: |
+        trade.is_option &&
+        trade.size >= config.bayesian_pooled_ci_high &&
+        config.bayesian_n < 20
+      severity: "medium"
+
+  tickers:
+    - symbol: "SPX"
+      option_type: "equity"
+      expiration_filter: "0DTE"
+      underlying_alert_rules:
+        - name: "spx_large_print"
+          expression: "trade.is_option && trade.size >= 50 && trade.price > 0.50"
+          severity: "high"
+        - name: "spx_hawkes_cluster"
+          expression: |
+            trade.is_option &&
+            config.hawkes_intensity > config.hawkes_mu * 4 &&
+            trade.delta_weighted_size >= config.p95_delta_weighted_size
+          severity: "high"
+        - name: "spx_wide_spread_toxicity"
+          expression: |
+            trade.is_option &&
+            config.spread_p95 > 0.05 &&
+            config.vpin >= config.vpin_threshold &&
+            trade.size >= 30
+          severity: "high"
+        - name: "spx_pooled_sparse_signal"
+          expression: |
+            trade.is_option &&
+            trade.size >= config.bayesian_pooled_ci_high &&
+            config.bayesian_n < 20
+          severity: "medium"
+
+    - symbol: "SPY"
+      option_type: "equity"
+      expiration_filter: "0DTE"
+      underlying_alert_rules:
+        - name: "spy_huge_option_print"
+          expression: "trade.is_option && trade.size >= 90 && trade.price > .25"
+          severity: "high"
+        - name: "spy_p95_delta_weighted"
+          expression: "trade.is_option && trade.delta_weighted_size >= config.p95_delta_weighted_size"
+          severity: "high"
+        - name: "spy_vap_poc_rejection"
+          expression: |
+            trade.is_option &&
+            trade.price < config.vap_val_area_low &&
+            trade.size >= 50
+          severity: "medium"
+        - name: "spy_seasonally_adjusted_surge"
+          expression: |
+            trade.is_option &&
+            trade.size >= config.seasonal_adj_size &&
+            config.seasonality_factor > 1.2
+          severity: "medium"
+
+detection:
+  # Base anomaly threshold
+  size_mult: 2.0
+  abs_min_size: 5
+  stats_window: 50
+  stats_half_life_sec: 600.0
+  stats_session_aware: true
+
+  # Decision-theoretic costs
+  cost_false_positive: 1.0
+  cost_false_negative: 10.0
+  cost_missed_regime_shift: 50.0
+
+  # Online FDR control
+  fdr_alpha: 0.05
+  fdr_lag: 0
+
+  # Volatility regime thresholds
+  vol_low: 0.01
+  vol_high: 0.03
+  vol_crash: 0.05
+  vol_target: 0.02
+
+  # Microstructure toxicity thresholds
+  vpin_threshold: 0.6
+  vpin_window_buckets: 265
+  vpin_bucket_volume: 1000
+
+  # Regime-conditioned P95 overrides
+  p95_by_regime:
+    low_vol:
+      p95_size: 80
+      p95_delta_weighted_size: 100000
+    normal:
+      p95_size: 120
+      p95_delta_weighted_size: 200000
+    high_vol:
+      p95_size: 200
+      p95_delta_weighted_size: 500000
+    crash:
+      p95_size: 500
+      p95_delta_weighted_size: 1000000
+
+  # Expression-based dynamic thresholds referencing runtime model outputs
+  dynamic_thresholds:
+    p95_size:
+      expression: "bayesian_mean * 10"
+      regime_adjustment:
+        low_vol: 0.8
+        normal: 1.0
+        high_vol: 1.5
+        crash: 2.0
+      vol_target: true
+
+    p95_delta_weighted_size:
+      expression: "bayesian_mean * 1000"
+      regime_adjustment:
+        low_vol: 0.8
+        normal: 1.0
+        high_vol: 1.5
+        crash: 2.0
+
+    vpin_threshold:
+      expression: "0.5 + rolling_std / 10"
+      regime_adjustment:
+        low_vol: 0.9
+        normal: 1.0
+        high_vol: 1.2
+        crash: 1.5
+
+outputs:
+  stdout: true
+  webhook:
+    enabled: false
+    url: "${WEBHOOK_URL}"
+    timeout_seconds: 5
+    max_retries: 3
+  data_dir: "data/events"
+  persist_events: true
+  significance_thresholds_file: "data/events/significance_thresholds.json"
+  models_state_file: "data/events/models_meta.json"
+
+stream:
+  backpressure_queue_size: 500
+  flush_interval_sec: 300.0
+  flush_batch_size: 1000
+
+dxlink:
+  max_payload_bytes: 60000
+  chunk_delay_sec: 0.1
+  enable_chunking: true
+
+logging:
+  level: "INFO"
+  json_format: true
